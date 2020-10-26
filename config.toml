@@ -11,7 +11,7 @@ url = "mognodb://localhost/def"
 dbs = [
     # sync a database, `colls` is options, if not provided, sync all
     # collecitons from the given db.
-    { db = "database", colls = ["collection1", "collection2"] }
+    { db = "database" }
 ]
 
 [log]

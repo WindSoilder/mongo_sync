@@ -1,6 +1,5 @@
-use std::fs;
 use mongo_sync::SyncerConfig;
-
+use std::fs;
 
 fn main() {
     let mut content: String = String::new();
