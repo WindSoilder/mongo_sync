@@ -11,7 +11,7 @@
 //! [sync]
 //! dbs = [
 //!     { db = "database", colls = ["collection1", "collection2"] }
-//!     { db = "database2"]}
+//!     { db = "database2" }
 //! ]
 //!
 //! [log]
@@ -22,10 +22,32 @@ use serde::Deserialize;
 /// Global mongo syncer configuration.
 #[derive(Deserialize, Debug)]
 pub struct SyncerConfig {
-    pub src: Src,
-    pub dst: Dst,
-    pub sync: DetailSyncConf,
-    pub log: Log,
+    src: Src,
+    dst: Dst,
+    sync: DetailSyncConf,
+    log: Log,
+}
+
+impl SyncerConfig {
+    /// get source mongodb url.
+    pub fn get_src_url(&self) -> &str {
+        &self.src.url
+    }
+
+    /// get destination mongodb url.
+    pub fn get_dst_url(&self) -> &str {
+        &self.dst.url
+    }
+
+    /// get path which can used to save/retrive optime information.
+    pub fn get_optime_path(&self) -> &str {
+        &self.log.optime_path
+    }
+
+    /// get database detailed sync options.
+    pub fn get_db_sync_info(&self) -> &[Db] {
+        &self.sync.dbs
+    }
 }
 
 /// Source database confuration.
