@@ -1,3 +1,3 @@
 mod config;
 
-pub use config::{SyncerConfig, Db};
+pub use config::{Db, SyncerConfig};
