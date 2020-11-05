@@ -10,12 +10,9 @@
 //!
 //! [sync]
 //! dbs = [
-//!     { db = "database", colls = ["collection1", "collection2"] }
 //!     { db = "database2" }
 //! ]
 //!
-//! [log]
-//! optime_path = "/tmp/tmp_oplog_time.log"   # save oplog time locally.
 //! ```
 use serde::Deserialize;
 
@@ -25,7 +22,6 @@ pub struct SyncerConfig {
     src: Src,
     dst: Dst,
     sync: DetailSyncConf,
-    log: Log,
 }
 
 impl SyncerConfig {
@@ -37,11 +33,6 @@ impl SyncerConfig {
     /// get destination mongodb url.
     pub fn get_dst_url(&self) -> &str {
         &self.dst.url
-    }
-
-    /// get path which can used to save/retrive optime information.
-    pub fn get_optime_path(&self) -> &str {
-        &self.log.optime_path
     }
 
     /// get database detailed sync options.
@@ -82,11 +73,4 @@ pub struct Log {
 pub struct Db {
     /// database name.
     db: String,
-    /// collection list, note that if it's empty, all collections in the database will be synced.
-    #[serde(default = "default_colls_to_sync")]
-    colls: Vec<String>,
-}
-
-fn default_colls_to_sync() -> Vec<String> {
-    vec![]
 }

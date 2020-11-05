@@ -13,7 +13,3 @@ dbs = [
     # collecitons from the given db.
     { db = "database" }
 ]
-
-[log]
-# log config.
-optime_path = "/tmp/tmp_oplog_time.log"   # save oplog time locally.
