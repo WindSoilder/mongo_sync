@@ -4,7 +4,7 @@ url = "mongodb://localhost/abc"
 
 [dst]
 # target db url, don't need to be a replica set.
-url = "mognodb://localhost/def"
+url = "mongodb://localhost/def"
 
 [sync]
 # specify databases to sync

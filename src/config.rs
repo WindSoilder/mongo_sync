@@ -36,7 +36,7 @@ impl SyncerConfig {
     }
 
     /// get database detailed sync options.
-    pub fn get_db_sync_info(&self) -> &[Db] {
+    pub fn get_db_sync_info(&self) -> &[DbConf] {
         &self.sync.dbs
     }
 }
@@ -59,7 +59,7 @@ pub struct Dst {
 #[derive(Deserialize, Debug)]
 pub struct DetailSyncConf {
     /// List of database sync information.
-    dbs: Vec<Db>,
+    dbs: Vec<DbConf>,
 }
 
 /// Logger config, for now it just includes where to save last optime.
@@ -70,7 +70,13 @@ pub struct Log {
 
 /// Single sync config term.
 #[derive(Deserialize, Debug)]
-pub struct Db {
+pub struct DbConf {
     /// database name.
     db: String,
+}
+
+impl DbConf {
+    pub fn get_name(&self) -> &str {
+        &self.db
+    }
 }
