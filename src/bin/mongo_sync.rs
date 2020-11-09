@@ -1,5 +1,6 @@
 use clap::Clap;
 use mongo_sync::{DbConnection, SyncerConfig};
+use mongo_sync::MongoSyncer;
 use mongodb::Client;
 use std::fs;
 
@@ -20,13 +21,16 @@ struct Opts {
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     env_logger::init();
     let opts: Opts = Opts::parse();
+    // read config and try to connect to relative database first.
     let conf: SyncerConfig = toml::from_slice(&fs::read(opts.conf)?)?;
     let conn: DbConnection = DbConnection::connect(&conf).await?;
+
     if let Err(e) = conn.check_permission().await {
         error!("Check permission failed, error message: {:?}", e);
         std::process::exit(1);
     }
 
-    // read config and try to connect to relative database first.
+    let syncer: MongoSyncer = MongoSyncer::new(conn);
+    syncer.main();
     Ok(())
 }
