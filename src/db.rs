@@ -10,10 +10,9 @@ pub struct DbConnection<'a> {
     target_uri: &'a str,
 }
 
-impl<'a> DbConnection<'a> {
-    pub async fn connect(conf: &'a SyncerConfig) -> Result<DbConnection<'a>> {
+impl DbConnection<'_> {
+    pub async fn connect(conf: &SyncerConfig) -> Result<DbConnection<'_>> {
         // try to connect to source, target mongodb.
-        println!("{}", conf.get_src_url());
         let source = Client::with_uri_str(conf.get_src_url()).await?;
         let target = Client::with_uri_str(conf.get_dst_url()).await?;
 
