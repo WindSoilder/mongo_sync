@@ -31,6 +31,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let syncer: MongoSyncer = MongoSyncer::new(conn);
-    syncer.main();
+    syncer.main().await;
     Ok(())
 }

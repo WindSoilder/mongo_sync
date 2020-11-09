@@ -59,4 +59,24 @@ impl DbConnection<'_> {
         }
         Ok(())
     }
+
+    pub fn get_source_client(&self) -> &Client {
+        &self.source
+    }
+
+    pub fn get_target_client(&self) -> &Client {
+        &self.target
+    }
+
+    pub fn get_databases(&self) -> &[String] {
+        &self.dbs
+    }
+
+    pub fn get_source_uri(&self) -> &str {
+        self.source_uri
+    }
+
+    pub fn get_target_uri(&self) -> &str {
+        self.target_uri
+    }
 }
