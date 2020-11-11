@@ -1,6 +1,6 @@
 use crate::DbConnection;
-use crate::Result;
 use crate::Oplog;
+use crate::Result;
 
 pub struct MongoSyncer<'a> {
     db_conn: DbConnection<'a>,
@@ -22,10 +22,17 @@ impl MongoSyncer<'_> {
                 .await
                 .unwrap();
 
-            let oplog = Oplog::from_doc(a);
-            if oplog.is_valid(self.db_conn.get_databases()) {
-                oplog.apply(self.db_conn.get_target_client()).await;
+            match a {
+                Some(d) => {
+                    let oplog = Oplog::from_doc(d);
+                }
+                None => {}
             }
+            break Ok(())
+            // let oplog = Oplog::from_doc(a);
+            // if oplog.is_valid(self.db_conn.get_databases()) {
+            //     oplog.apply(self.db_conn.get_target_client()).await;
+            // }
         }
     }
 }
