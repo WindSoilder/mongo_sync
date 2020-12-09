@@ -8,4 +8,4 @@ pub use config::SyncerConfig;
 pub use db::DbConnection;
 pub use error::{Result, SyncError};
 pub use mongo_syncer::MongoSyncer;
-pub use oplog::Oplog;
+pub use oplog::v2::oplog::Oplog;

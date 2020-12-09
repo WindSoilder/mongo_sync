@@ -1,3 +1,4 @@
+use bson::document::ValueAccessError;
 use mongodb::error::Error as MongoError;
 use std::result::Result as StdResult;
 use thiserror::Error;
@@ -12,6 +13,10 @@ pub enum SyncError {
         db: String,
         detail: MongoError,
     },
+    #[error("Mongodb document value error")]
+    BsonError(#[from] ValueAccessError),
+    #[error("Invalid doc value for bson, get key: {key:?}, val: {val:?}")]
+    BsonValueError { key: String, val: String },
 }
 
 pub type Result<T> = StdResult<T, SyncError>;

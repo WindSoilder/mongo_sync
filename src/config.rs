@@ -35,9 +35,14 @@ impl SyncerConfig {
         &self.dst.url
     }
 
-    /// get database detailed sync options.
-    pub fn get_db_sync_info(&self) -> &[DbConf] {
-        &self.sync.dbs
+    /// get database to sync.
+    pub fn get_db(&self) -> &str {
+        &self.sync.db
+    }
+
+    /// get collections to sync.
+    pub fn get_colls(&self) -> Option<&Vec<String>> {
+        self.sync.colls.as_ref()
     }
 }
 
@@ -58,25 +63,19 @@ pub struct Dst {
 /// Detail sync config, it indicates which database to sync, or which collection to sync.
 #[derive(Deserialize, Debug)]
 pub struct DetailSyncConf {
-    /// List of database sync information.
-    dbs: Vec<DbConf>,
+    /// database name
+    db: String,
+    /// collections to sync, default it None, which means sync all collections.
+    #[serde(default = "default_collections")]
+    colls: Option<Vec<String>>,
+}
+
+fn default_collections() -> Option<Vec<String>> {
+    None
 }
 
 /// Logger config, for now it just includes where to save last optime.
 #[derive(Deserialize, Debug)]
 pub struct Log {
     optime_path: String,
-}
-
-/// Single sync config term.
-#[derive(Deserialize, Debug)]
-pub struct DbConf {
-    /// database name.
-    db: String,
-}
-
-impl DbConf {
-    pub fn get_name(&self) -> &str {
-        &self.db
-    }
 }
