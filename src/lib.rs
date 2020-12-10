@@ -1,7 +1,6 @@
 mod config;
-mod connection;
 mod error;
-mod mongo_syncer;
+mod blocking;
 mod oplog;
 
 pub use config::SyncerConfig;
