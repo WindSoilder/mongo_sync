@@ -1,11 +1,11 @@
 [src]
 # source db url, need to be a replica set.
-url = "mongodb://rice:Ricemap123@localhost/abc?authSource=admin"
+url = "mongodb://rice:Ricemap123@localhost/?authSource=admin"
 
 [dst]
 # target db url, don't need to be a replica set.
-url = "mongodb://rice:Ricemap123@localhost/def?authSource=admin"
+url = "mongodb://root:Ricemap123@192.168.10.67/?authSource=admin"
 
 [sync]
 # specify databases to sync
-db = "database"
+db = "bb"

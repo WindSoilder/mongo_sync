@@ -20,7 +20,7 @@
 //! "n": Noop
 
 use crate::{Result, SyncError};
-use mongodb::bson::{oid::ObjectId, Document, Timestamp, doc};
+use mongodb::bson::{oid::ObjectId, Document, Timestamp};
 
 const OP_KEY: &str = "op";
 const INSERT_OP: &str = "i";

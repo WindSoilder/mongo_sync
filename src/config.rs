@@ -9,10 +9,8 @@
 //! url = "mognodb://localhost/def"
 //!
 //! [sync]
-//! dbs = [
-//!     { db = "database2" }
-//! ]
-//!
+//! db = "database"
+//! colls = ["a", "b"]
 //! ```
 use serde::Deserialize;
 
@@ -41,8 +39,8 @@ impl SyncerConfig {
     }
 
     /// get collections to sync.
-    pub fn get_colls(&self) -> Option<&Vec<String>> {
-        self.sync.colls.as_ref()
+    pub fn get_colls(&self) -> &Option<Vec<String>> {
+        &self.sync.colls
     }
 }
 
