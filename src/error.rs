@@ -1,4 +1,5 @@
 use bson::document::ValueAccessError;
+use crossbeam::channel::RecvError;
 use mongodb::error::Error as MongoError;
 use std::result::Result as StdResult;
 use thiserror::Error;
@@ -17,6 +18,8 @@ pub enum SyncError {
     BsonError(#[from] ValueAccessError),
     #[error("Invalid doc value for bson, get key: {key:?}, val: {val:?}")]
     BsonValueError { key: String, val: String },
+    #[error("Receiver task message error")]
+    ReceiveStatusError(#[from] RecvError),
 }
 
 pub type Result<T> = StdResult<T, SyncError>;
