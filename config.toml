@@ -9,3 +9,5 @@ url = "mongodb://root:Ricemap123@192.168.10.67/?authSource=admin"
 [sync]
 # specify databases to sync
 db = "bb"
+collection_concurrent = 4
+sync_buffer_size = 10000

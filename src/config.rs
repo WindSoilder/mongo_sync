@@ -42,6 +42,11 @@ impl SyncerConfig {
     pub fn get_colls(&self) -> &Option<Vec<String>> {
         &self.sync.colls
     }
+
+    /// get concurrent to sync collections.
+    pub fn get_collection_concurrent(&self) -> usize {
+        self.sync.collection_concurrent
+    }
 }
 
 /// Source database confuration.
@@ -66,10 +71,17 @@ pub struct DetailSyncConf {
     /// collections to sync, default it None, which means sync all collections.
     #[serde(default = "default_collections")]
     colls: Option<Vec<String>>,
+    /// how many collections will be sync concurrently.
+    #[serde(default = "number_of_cpus")]
+    collection_concurrent: usize,
 }
 
 fn default_collections() -> Option<Vec<String>> {
     None
+}
+
+fn number_of_cpus() -> usize {
+    num_cpus::get()
 }
 
 /// Logger config, for now it just includes where to save last optime.

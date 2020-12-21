@@ -18,7 +18,7 @@ impl MongoSyncer {
     }
 
     pub fn sync_full(&self) -> Result<()> {
-        self.manager.sync_full();
+        self.manager.sync_full()?;
 
         match self.receiver.recv() {
             Ok(_) => Ok(()),
@@ -31,7 +31,7 @@ impl MongoSyncer {
     }
 
     pub fn sync(self) -> Result<()> {
-        self.sync_full();
+        self.sync_full()?;
         // self.sync_incremental();
         Ok(())
     }
@@ -49,20 +49,26 @@ struct SyncManager {
 
 enum SyncTableStatus {
     Done,
+    Abort(SyncError),
+    Failed(SyncError),
 }
 
 impl SyncManager {
     pub fn new(conn: Connection, sender: Sender<ManagerTaskStatus>) -> SyncManager {
+        let coll_concurrent = conn.get_conf().get_collection_concurrent();
         SyncManager {
             conn,
             sender,
-            pool: ThreadPoolBuilder::new().num_threads(10).build().unwrap(),
+            pool: ThreadPoolBuilder::new()
+                .num_threads(coll_concurrent)
+                .build()
+                .unwrap(),
         }
     }
 
     pub fn sync_full(&self) -> Result<()> {
-        // TODO: make decision by configuration.
-        let (sender, receiver) = channel::bounded(10);
+        let coll_concurrent = self.conn.get_conf().get_collection_concurrent();
+        let (sender, receiver) = channel::bounded(coll_concurrent);
 
         let mut complete_count = 0;
         info!("{:?}", self.conn.get_conf().get_colls());
@@ -74,26 +80,36 @@ impl SyncManager {
         let total = coll_names.len() as u32;
         info!("{:?}", coll_names);
         for coll in coll_names.into_iter() {
-
             let sender = sender.clone();
             let source_coll = self.conn.get_src_db().collection(&coll);
             let target_coll = self.conn.get_target_db().collection(&coll);
 
             self.pool.spawn(move || {
-                // TODO: don't use unwrap, should send error through channel.
-                target_coll.drop(None).unwrap();
+                if let Err(e) = target_coll.drop(None) {
+                    error!("Drop target collection failed, error msg: {:?}", e);
+                    let _ = sender.send(SyncTableStatus::Failed(SyncError::MongoError(e)));
+                    return;
+                }
 
-                let mut buffer = vec![];
-                let mut cursor = source_coll.find(None, None).unwrap();
-                while let Some(doc) = cursor.next() {
+                let buf_size = 10000;
+                let mut buffer = Vec::with_capacity(buf_size);
+                let cursor = source_coll.find(None, None).unwrap();
+                for doc in cursor {
                     buffer.push(doc.unwrap());
-                    if buffer.len() == 10000 {
-                        let mut data_to_write = vec![];
+                    if buffer.len() == buf_size {
+                        let mut data_to_write = Vec::with_capacity(buf_size);
                         std::mem::swap(&mut buffer, &mut data_to_write);
-                        target_coll.insert_many(data_to_write, None).unwrap();
+
+                        if let Err(e) = target_coll.drop(None) {
+                            error!("Insert data to target collection failed, error msg: {:?}", e);
+                            let _ = sender.send(SyncTableStatus::Failed(SyncError::MongoError(e)));
+                            return;
+                        }
                     }
                 }
-                sender.send(SyncTableStatus::Done);
+
+                // TODO: sync index.
+                let _ = sender.send(SyncTableStatus::Done);
             })
         }
 
@@ -101,6 +117,7 @@ impl SyncManager {
             complete_count += 1;
             if total == complete_count {
                 let _ = self.sender.send(ManagerTaskStatus::Done);
+                break;
             }
         }
         Ok(())
