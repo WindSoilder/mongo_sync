@@ -108,7 +108,7 @@ impl SyncManager {
                     }
                 }
 
-                // TODO: sync index.
+                // TODO: sync index, for now mongodb crate doesn't have any API for this.
                 let _ = sender.send(SyncTableStatus::Done);
             })
         }

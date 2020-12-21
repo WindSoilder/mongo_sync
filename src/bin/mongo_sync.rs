@@ -19,6 +19,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let data = std::fs::read(opts.conf).unwrap();
     let conf: SyncerConfig = toml::from_slice(&data).unwrap();
     let syncer = MongoSyncer::new(Connection::new(Arc::new(conf)).unwrap());
-    syncer.sync_full();
+    syncer.sync()?;
     Ok(())
 }
