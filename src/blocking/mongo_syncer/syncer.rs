@@ -1,6 +1,7 @@
 use crate::blocking::connection::Connection;
 use crate::error::{Result, SyncError};
 use crossbeam::channel::{self, Receiver, Sender};
+use mongodb::coll::Collection;
 use rayon::{ThreadPool, ThreadPoolBuilder};
 
 pub struct MongoSyncer {
@@ -91,21 +92,10 @@ impl SyncManager {
                     return;
                 }
 
-                let buf_size = 10000;
-                let mut buffer = Vec::with_capacity(buf_size);
-                let cursor = source_coll.find(None, None).unwrap();
-                for doc in cursor {
-                    buffer.push(doc.unwrap());
-                    if buffer.len() == buf_size {
-                        let mut data_to_write = Vec::with_capacity(buf_size);
-                        std::mem::swap(&mut buffer, &mut data_to_write);
-
-                        if let Err(e) = target_coll.drop(None) {
-                            error!("Insert data to target collection failed, error msg: {:?}", e);
-                            let _ = sender.send(SyncTableStatus::Failed(SyncError::MongoError(e)));
-                            return;
-                        }
-                    }
+                if let Err(e) = self.sync_one_collection(source_coll, target_coll) {
+                    error!("Sync collection failed, error msg: {:?}", e);
+                    let _ = sender.send(SyncTableStatus::Failed(SyncError::MongoError(e)));
+                    return;
                 }
 
                 // TODO: sync index, for now mongodb crate doesn't have any API for this.
@@ -118,6 +108,21 @@ impl SyncManager {
             if total == complete_count {
                 let _ = self.sender.send(ManagerTaskStatus::Done);
                 break;
+            }
+        }
+        Ok(())
+    }
+
+    fn sync_one_collection(&self, source_coll: Collection, target_coll: Collection) -> Result<()> {
+        let buf_size = 10000;
+        let mut buffer = Vec::with_capacity(buf_size);
+        let cursor = source_coll.find(None, None).unwrap();
+        for doc in cursor {
+            buffer.push(doc.unwrap());
+            if buffer.len() == buf_size {
+                let mut data_to_write = Vec::with_capacity(buf_size);
+                std::mem::swap(&mut buffer, &mut data_to_write);
+                target_coll.insert_many(data_to_write, None);
             }
         }
         Ok(())
