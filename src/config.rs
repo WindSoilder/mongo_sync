@@ -47,6 +47,12 @@ impl SyncerConfig {
     pub fn get_collection_concurrent(&self) -> usize {
         self.sync.collection_concurrent
     }
+
+    /// get document concurrent to sync inside one collection.
+    pub fn get_doc_concurrent(&self) -> usize {
+        self.sync.doc_concurrent
+    }
+
 }
 
 /// Source database confuration.
@@ -74,6 +80,9 @@ pub struct DetailSyncConf {
     /// how many collections will be sync concurrently.
     #[serde(default = "number_of_cpus")]
     collection_concurrent: usize,
+    /// how many threads will used to sync one collection concurrently.
+    #[serde(default = "half_number_of_cpus")]
+    doc_concurrent: usize,
 }
 
 fn default_collections() -> Option<Vec<String>> {
@@ -82,6 +91,10 @@ fn default_collections() -> Option<Vec<String>> {
 
 fn number_of_cpus() -> usize {
     num_cpus::get()
+}
+
+fn half_number_of_cpus() -> usize {
+    num_cpus::get() / 2
 }
 
 /// Logger config, for now it just includes where to save last optime.
