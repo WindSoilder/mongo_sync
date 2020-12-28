@@ -98,7 +98,6 @@ impl SyncManager {
             let sender = sender.clone();
             let source_coll = self.conn.get_src_db().collection(&coll);
             let target_coll = self.conn.get_target_db().collection(&coll);
-            // ??? Need to move doc_count, and drop statements to pool?
             let doc_count = source_coll.estimated_document_count(None)? as usize;
             target_coll.drop(None)?;
 
@@ -232,7 +231,6 @@ fn split_ids(coll: &Collection, doc_concurrent: usize) -> Result<Vec<(ObjectId, 
             )?
             .unwrap();
 
-        // TODO: study case, can write test code to compare between clone and this method.
         let min_id = min_id.get_object_id_mut("_id").unwrap();
         let min_id = std::mem::replace(min_id, ObjectId::with_bytes(null_id_bytes));
         let max_id = max_id.get_object_id_mut("_id").unwrap();
