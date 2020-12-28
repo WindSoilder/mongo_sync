@@ -98,6 +98,7 @@ impl SyncManager {
             let sender = sender.clone();
             let source_coll = self.conn.get_src_db().collection(&coll);
             let target_coll = self.conn.get_target_db().collection(&coll);
+            // ??? Maybe we need to put these operation into threads.
             let doc_count = source_coll.estimated_document_count(None)? as usize;
             target_coll.drop(None)?;
 
