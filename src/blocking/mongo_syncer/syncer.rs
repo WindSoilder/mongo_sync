@@ -78,18 +78,19 @@ impl SyncManager {
         let coll_concurrent = conf.get_collection_concurrent();
         let doc_concurrent = conf.get_doc_concurrent();
         let (sender, receiver) = channel::bounded(coll_concurrent);
+        let (src_db, target_db) = (self.conn.get_src_db(), self.conn.get_target_db());
 
         let coll_names = match self.conn.get_conf().get_colls() {
             // use unwrap here is ok, because we have check list_collection_names before.
-            None => self.conn.get_src_db().list_collection_names(None).unwrap(),
+            None => src_db.list_collection_names(None).unwrap(),
             Some(colls) => colls.clone(),
         };
         let total = coll_names.len();
 
         for coll in coll_names.into_iter() {
             let sender = sender.clone();
-            let source_coll = self.conn.get_src_db().collection(&coll);
-            let target_coll = self.conn.get_target_db().collection(&coll);
+            let source_coll = src_db.collection(&coll);
+            let target_coll = target_db.collection(&coll);
             // ??? Maybe we need to put these operation into threads.
             let doc_count = source_coll.estimated_document_count(None)? as usize;
             target_coll.drop(None)?;

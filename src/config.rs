@@ -53,6 +53,12 @@ impl SyncerConfig {
         self.sync.doc_concurrent
     }
 
+    /// get record collection name.
+    ///
+    /// The collection is used to record current sync status.
+    pub fn get_record_collection(&self) -> &str {
+        &self.sync.record_collection
+    }
 }
 
 /// Source database confuration.
@@ -83,6 +89,13 @@ pub struct DetailSyncConf {
     /// how many threads will used to sync one collection concurrently.
     #[serde(default = "half_number_of_cpus")]
     doc_concurrent: usize,
+    /// which time record collection will be written to.
+    #[serde(default = "default_record_collection")]
+    record_collection: String,
+}
+
+fn default_record_collection() -> String {
+    "sync_time_record".to_string()
 }
 
 fn default_collections() -> Option<Vec<String>> {
