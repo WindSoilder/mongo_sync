@@ -171,5 +171,9 @@ impl SyncManager {
 
     pub fn sync_incr(&self) -> Result<()> {
         unimplemented!()
+        // read a batch of oplog.
+        // convert these oplog into db operations.
+        // warn: if we meet command, should block and execute these command first(one by one).
+        // do bulk_write.
     }
 }
