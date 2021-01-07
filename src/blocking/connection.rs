@@ -1,6 +1,6 @@
 use crate::config::SyncerConfig;
 use crate::error::{Result, SyncError};
-use mongodb::sync::{Client, Database};
+use mongodb::sync::{Client, Database, Collection};
 use std::sync::Arc;
 
 #[derive(Clone)]
@@ -31,6 +31,14 @@ impl Connection {
 
     pub fn get_target_db(&self) -> Database {
         self.inner.target_conn.database(self.inner.config.get_db())
+    }
+
+    pub fn time_record_coll(&self) -> Collection {
+        self.get_target_db().collection(self.inner.config.get_record_collection())
+    }
+
+    pub fn oplog_coll(&self) -> Collection {
+        self.inner.source_conn.database("local").collection("oplog.rs")
     }
 
     pub fn get_conf(&self) -> Arc<SyncerConfig> {

@@ -1,7 +1,9 @@
 use super::full::{sync_one_concurrent, sync_one_serial, SyncTableStatus};
 use crate::blocking::connection::Connection;
 use crate::error::{Result, SyncError};
+use bson::doc;
 use crossbeam::channel::{self, Receiver, Sender};
+use mongodb::options::FindOneOptions;
 use rayon::{ThreadPool, ThreadPoolBuilder};
 use std::sync::Arc;
 
@@ -35,8 +37,14 @@ impl MongoSyncer {
     }
 
     pub fn sync(self) -> Result<()> {
-        self.sync_full()?;
-        // self.sync_incremental();
+        loop {
+            // check time record missing.
+            if self.manager.is_time_record_missing()? {
+                self.sync_full()?;
+            }
+            // self.manager.write_time_record()?;
+            self.sync_incremental()?;
+        }
         Ok(())
     }
 }
@@ -131,6 +139,34 @@ impl SyncManager {
             }
         }
         Ok(())
+    }
+
+    pub fn is_time_record_missing(&self) -> Result<bool> {
+        // when the following happened, return true:
+        // 1. can't get time record information, or
+        // 2. the minimum value of oplog timestamp > time record.
+        // condition 2 means that oplog can't be applied between time record and min(oplog timestamp)
+        let coll = self.conn.time_record_coll();
+        let rec = coll.find_one(None, None)?;
+        match rec {
+            Some(doc) => {
+                let ts = doc.get_timestamp("ts")?;
+                let missing = self
+                    .conn
+                    .oplog_coll()
+                    .find_one(None, FindOneOptions::builder().sort(doc! {"ts": 1}).build())?
+                    .map(|log| {
+                        // unwrap here is ok because oplog always contains `ts` field.
+                        let oldest_ts = log.get_timestamp("ts").unwrap();
+                        oldest_ts > ts
+                    });
+                match missing {
+                    Some(missed) => Ok(missed),
+                    None => Ok(false), // can't find oplog.
+                }
+            }
+            None => Ok(true),
+        }
     }
 
     pub fn sync_incr(&self) -> Result<()> {
