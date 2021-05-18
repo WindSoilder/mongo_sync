@@ -1,0 +1,25 @@
+[src]
+# source db url, need to be a replica set.
+url = "mongodb://rice:Ricemap123@localhost/?authSource=admin"
+
+[oplog]
+# mongodb url to sync oplog from source client.
+storage_url = "mongodb://root:Ricemap123@192.168.10.67/?authSource=admin"
+
+[[sync]]
+# source db url, need to be a replica set.
+src_url = "mongodb://rice:Ricemap123@localhost/?authSource=admin"
+# target db url, don't need to be a replica set.
+dst_url = "mongodb://root:Ricemap123@192.168.10.67/?authSource=admin"
+# specify database to sync.
+db = "bb"
+colls = ["a", "b"]
+
+[[sync]]
+# source db url, need to be a replica set.
+src_url = "mongodb://rice:Ricemap123@localhost/?authSource=admin"
+# target db url, don't need to be a replica set.
+dst_url = "mongodb://root:Ricemap123@192.168.10.67/?authSource=admin"
+# specify database to sync.
+db = "bb"
+colls = ["a", "b"]
