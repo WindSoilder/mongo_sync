@@ -1,5 +1,7 @@
 use clap::Clap;
 use mongo_sync::SyncerConfigV2 as SyncerConfig;
+use mongo_sync::OplogSyncer;
+
 
 #[derive(Clap, Debug)]
 #[clap(version = env!("CARGO_PKG_VERSION"), author = env!("CARGO_PKG_AUTHORS"))]
@@ -14,6 +16,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let opts: Opts = Opts::parse();
     let data = std::fs::read(opts.conf).unwrap();
     let conf: SyncerConfig = toml::from_slice(&data).unwrap();
-    println!("{:?}", conf);
+
+    // create a new thread to handle for oplog sync.
+    let oplog_syncer = OplogSyncer::new(conf.get_src_url(), conf.get_oplog_storage_url())?;
+    oplog_syncer.sync_forever()?;
+
+    // iterate through syncer configuration, and start new mongo_sync via command line.
     Ok(())
 }
