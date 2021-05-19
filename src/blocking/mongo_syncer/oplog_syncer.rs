@@ -36,6 +36,7 @@ impl OplogSyncer {
 
     pub fn sync_forever(self) -> Result<()> {
         let storage_db = self.storage_conn.database(LOG_STORAGE_DB);
+        // [TODO]: create index for storage_coll.
         let storage_coll = storage_db.collection(LOG_STORAGE_COLL);
         let oplog_truncate_after_point = storage_db.collection(OPLOG_TRUNCATE_AFTER_POINT);
 
@@ -44,26 +45,38 @@ impl OplogSyncer {
             .database(REPLICA_OPLOG_DB)
             .collection(REPLICA_OPLOG_COLL);
 
-        const BATCH_DELAY: u64 = 3;  // save data every 3 seconds.
+        const BATCH_DELAY: u64 = 3; // save data every 3 seconds.
 
         // remove dirty data, some oplogs may exists after our recorded truncate point.
+        const MIN_TS: Timestamp = Timestamp {
+            time: 0,
+            increment: 0,
+        };
         let truncate_ts = oplog_truncate_after_point
             .find_one(None, None)?
-            .unwrap_or(doc! {"ts": Timestamp {
-                time: 0, increment: 0
-            }})
+            .unwrap_or(doc! {"ts": MIN_TS})
             .get_timestamp(TIMESTAMP_KEY)?;
         info!(?truncate_ts, "Truncate oplog after given point. ");
         storage_coll.delete_many(doc! {TIMESTAMP_KEY: {"$gte": truncate_ts}}, None)?;
         info!(start_time = ?truncate_ts, "Begin to sync oplog. ");
 
         // fetch and sync oplog.
-        let cursor = source_coll.find(
-            doc! {TIMESTAMP_KEY: {"$gte": truncate_ts}},
-            FindOptions::builder()
-                .cursor_type(CursorType::TailableAwait)
-                .build(),
-        )?;
+        let cursor = if truncate_ts == MIN_TS {
+            source_coll.find(
+                doc! {TIMESTAMP_KEY: {"$gte": truncate_ts}},
+                FindOptions::builder()
+                    .cursor_type(CursorType::TailableAwait)
+                    .build(),
+            )?
+        } else {
+            source_coll.find(
+                doc! {TIMESTAMP_KEY: {"$gte": truncate_ts}},
+                FindOptions::builder()
+                    .cursor_type(CursorType::TailableAwait)
+                    .build(),
+            )?
+        };
+
         let mut now = SystemTime::now();
         let mut oplog_batched: Vec<Document> = vec![];
         for doc in cursor {
