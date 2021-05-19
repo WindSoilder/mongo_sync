@@ -1,7 +1,6 @@
 use clap::Clap;
-use mongo_sync::SyncerConfigV2 as SyncerConfig;
 use mongo_sync::OplogSyncer;
-
+use mongo_sync::SyncerConfigV2 as SyncerConfig;
 
 #[derive(Clap, Debug)]
 #[clap(version = env!("CARGO_PKG_VERSION"), author = env!("CARGO_PKG_AUTHORS"))]
@@ -12,7 +11,10 @@ struct Opts {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    env_logger::init();
+    let collector = tracing_subscriber::fmt().finish();
+
+    tracing::subscriber::set_global_default(collector).expect("setting tracing default failed");
+
     let opts: Opts = Opts::parse();
     let data = std::fs::read(opts.conf).unwrap();
     let conf: SyncerConfig = toml::from_slice(&data).unwrap();

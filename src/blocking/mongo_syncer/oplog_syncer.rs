@@ -4,16 +4,18 @@ use mongodb::bson::{Document, Timestamp};
 use mongodb::options::{CursorType, FindOptions};
 use mongodb::sync::{Client, Collection};
 use std::time::SystemTime;
+use tracing::info;
 
+#[derive(Debug)]
 pub struct OplogSyncer {
     source_conn: Client,
     storage_conn: Client,
 }
 
-const LOG_STORAGE_DB: &'static str = "source_oplog";
-const LOG_STORAGE_COLL: &'static str = "source_oplog";
-const OPLOG_DB: &'static str = "local";
-const OPLOG_COLL: &'static str = "oplog.rs";
+const LOG_STORAGE_DB: &str = "source_oplog";
+const LOG_STORAGE_COLL: &str = "source_oplog";
+const REPLICA_OPLOG_DB: &str = "local";
+const REPLICA_OPLOG_COLL: &str = "oplog.rs";
 const OPLOG_TRUNCATE_AFTER_POINT: &str = "oplog_truncate_after_point";
 
 const NAMESPACE_KEY: &str = "ns";
@@ -32,34 +34,40 @@ impl OplogSyncer {
         })
     }
 
-    pub fn check_permissions(&self) -> Result<()> {
-        unimplemented!()
-    }
-
     pub fn sync_forever(self) -> Result<()> {
-        let storage_coll = self
-            .storage_conn
-            .database(LOG_STORAGE_DB)
-            .collection(LOG_STORAGE_COLL);
-        let oplog_truncate_after_point = self
-            .storage_conn
-            .database(LOG_STORAGE_DB)
-            .collection(OPLOG_TRUNCATE_AFTER_POINT);
+        let storage_db = self.storage_conn.database(LOG_STORAGE_DB);
+        let storage_coll = storage_db.collection(LOG_STORAGE_COLL);
+        let oplog_truncate_after_point = storage_db.collection(OPLOG_TRUNCATE_AFTER_POINT);
 
-        let source_coll = self.source_conn.database(OPLOG_DB).collection(OPLOG_COLL);
+        let source_coll = self
+            .source_conn
+            .database(REPLICA_OPLOG_DB)
+            .collection(REPLICA_OPLOG_COLL);
+
+        const BATCH_DELAY: u64 = 3;  // save data every 3 seconds.
+
+        // remove dirty data, some oplogs may exists after our recorded truncate point.
+        let truncate_ts = oplog_truncate_after_point
+            .find_one(None, None)?
+            .unwrap_or(doc! {"ts": Timestamp {
+                time: 0, increment: 0
+            }})
+            .get_timestamp(TIMESTAMP_KEY)?;
+        info!(?truncate_ts, "Truncate oplog after given point. ");
+        storage_coll.delete_many(doc! {TIMESTAMP_KEY: {"$gte": truncate_ts}}, None)?;
+        info!(start_time = ?truncate_ts, "Begin to sync oplog. ");
+
+        // fetch and sync oplog.
         let cursor = source_coll.find(
-            None,
+            doc! {TIMESTAMP_KEY: {"$gte": truncate_ts}},
             FindOptions::builder()
                 .cursor_type(CursorType::TailableAwait)
                 .build(),
         )?;
         let mut now = SystemTime::now();
         let mut oplog_batched: Vec<Document> = vec![];
-        const BATCH_DELAY: u64 = 3;
-
         for doc in cursor {
             let doc = doc?;
-            // println!("{:?}", doc);
 
             if !self.is_useless_oplog(&doc)? {
                 oplog_batched.push(doc);
@@ -68,12 +76,18 @@ impl OplogSyncer {
             if now.elapsed().unwrap().as_secs() >= BATCH_DELAY && !oplog_batched.is_empty() {
                 let latest_ts =
                     oplog_batched[oplog_batched.len() - 1].get_timestamp(TIMESTAMP_KEY)?;
+                let earliest_ts = oplog_batched[0].get_timestamp(TIMESTAMP_KEY)?;
 
                 let mut data_to_write: Vec<Document> = Vec::with_capacity(oplog_batched.len());
                 std::mem::swap(&mut oplog_batched, &mut data_to_write);
                 storage_coll.insert_many(data_to_write, None)?;
+
+                info!(?earliest_ts, ?latest_ts, "Sync oplog complete. ");
                 oplog_batched.clear();
                 self.save_latest_ts(&oplog_truncate_after_point, latest_ts)?;
+
+                info!(?latest_ts, "Write truncate after point complete. ");
+
                 now = SystemTime::now();
             }
         }
@@ -94,6 +108,7 @@ impl OplogSyncer {
         )?;
         Ok(())
     }
+
     fn is_useless_oplog(&self, doc: &Document) -> Result<bool> {
         let op = doc.get_str(OP_KEY)?;
         let ns = doc.get_str(NAMESPACE_KEY)?;

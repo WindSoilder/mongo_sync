@@ -9,6 +9,3 @@ pub use config::SyncerConfig; // TODO: remove the old config, for easily debug, 
 pub use config_v2::SyncerConfig as SyncerConfigV2;
 pub use error::{Result, SyncError};
 pub use oplog::v2::oplog::Oplog;
-
-#[macro_use]
-extern crate log;
