@@ -1,4 +1,4 @@
-use crate::config::SyncerConfig;
+use crate::config_v2::DbSyncConf;
 use crate::error::{Result, SyncError};
 use mongodb::sync::{Client, Database, Collection};
 use std::sync::Arc;
@@ -9,7 +9,7 @@ pub struct Connection {
 }
 
 impl Connection {
-    pub fn new(config: Arc<SyncerConfig>) -> Result<Connection> {
+    pub fn new(config: Arc<DbSyncConf>) -> Result<Connection> {
         let source_conn = Client::with_uri_str(config.get_src_url())?;
         let target_conn = Client::with_uri_str(config.get_dst_url())?;
         Ok(Connection {
@@ -41,7 +41,7 @@ impl Connection {
         self.inner.source_conn.database("local").collection("oplog.rs")
     }
 
-    pub fn get_conf(&self) -> Arc<SyncerConfig> {
+    pub fn get_conf(&self) -> Arc<DbSyncConf> {
         self.inner.config.clone()
     }
 }
@@ -50,11 +50,12 @@ impl Connection {
 struct ConnectionInner {
     source_conn: Client,
     target_conn: Client,
-    config: Arc<SyncerConfig>,
+    config: Arc<DbSyncConf>,
 }
 
 impl ConnectionInner {
     pub fn check_permissions(&self) -> Result<()> {
+        // TODO: add admin access check, to ensure that we can execute applylog command.
         let db_name = self.config.get_db();
         let source_db = self.source_conn.database(db_name);
         if let Err(e) = source_db.list_collection_names(None) {
