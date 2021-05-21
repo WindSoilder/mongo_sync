@@ -22,6 +22,7 @@ pub fn sync_one_concurrent(
     let id_ranges: Vec<(ObjectId, ObjectId)> = split_ids(&source_coll, doc_concurrent)?;
     let buf_size = 10000;
     let (sender, receiver) = channel::bounded(doc_concurrent);
+    println!("{}", id_ranges.len());
     for (id_min, id_max) in id_ranges {
         let source_coll = source_coll.clone();
         let target_coll = target_coll.clone();
@@ -41,6 +42,9 @@ pub fn sync_one_concurrent(
                             std::mem::swap(&mut buffer, &mut data_to_write);
                             target_coll.insert_many(data_to_write, None)?;
                         }
+                    }
+                    if !buffer.is_empty() {
+                        target_coll.insert_many(buffer, None)?;
                     }
 
                     Ok(())

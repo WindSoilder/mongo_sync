@@ -77,12 +77,35 @@ fn half_number_of_cpus() -> usize {
     num_cpus::get() / 2
 }
 
+#[derive(Debug)]
 pub struct DbSyncConf {
     src: Src,
     conf: DetailSyncConf,
 }
 
 impl DbSyncConf {
+    pub fn new(
+        src_uri: String,
+        target_uri: String,
+        db: String,
+        colls: Option<Vec<String>>,
+        collection_concurrent: Option<usize>,
+        doc_concurrent: Option<usize>,
+        record_collection: Option<String>,
+    ) -> Self {
+        DbSyncConf {
+            src: Src { url: src_uri },
+            conf: DetailSyncConf {
+                dst_url: target_uri,
+                db,
+                colls,
+                collection_concurrent: collection_concurrent.unwrap_or_else(|| number_of_cpus()),
+                doc_concurrent: doc_concurrent.unwrap_or_else(|| half_number_of_cpus()),
+                record_collection: record_collection.unwrap_or_else(|| default_record_collection()),
+            },
+        }
+    }
+
     pub fn get_db(&self) -> &str {
         &self.conf.db
     }

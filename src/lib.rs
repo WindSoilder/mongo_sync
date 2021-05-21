@@ -16,6 +16,6 @@ const NOOP_OP: &str = "n";
 
 pub use blocking::{Connection, MongoSyncer, OplogSyncer};
 pub use config::SyncerConfig; // TODO: remove the old config, for easily debug, keep it here for now.
-pub use config_v2::SyncerConfig as SyncerConfigV2;
+pub use config_v2::{DbSyncConf, SyncerConfig as SyncerConfigV2};
 pub use error::{Result, SyncError};
 pub use oplog::v2::oplog::Oplog;

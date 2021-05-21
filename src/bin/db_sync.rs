@@ -1,5 +1,6 @@
 use clap::Clap;
-use mongo_sync::{Connection, MongoSyncer, SyncerConfig};
+use mongo_sync::DbSyncConf;
+use mongo_sync::{Connection, MongoSyncer};
 use std::sync::Arc;
 use tracing::info;
 
@@ -14,18 +15,32 @@ struct Opts {
     db: String,
     #[clap(short, long)]
     colls: Option<Vec<String>>,
+    #[clap(long)]
+    collection_concurrent: Option<usize>,
+    #[clap(long)]
+    doc_concurrent: Option<usize>,
+    #[clap(long)]
+    record_collection: Option<String>,
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let collector = tracing_subscriber::fmt().finish();
     tracing::subscriber::set_global_default(collector).expect("setting tracig default failed");
     let opts: Opts = Opts::parse();
-    println!("{:?}", opts);
-    /*
-    let data = std::fs::read(opts.conf).unwrap();
-    let conf: SyncerConfig = toml::from_slice(&data).unwrap();
+
+    let conf: DbSyncConf = DbSyncConf::new(
+        opts.src_uri,
+        opts.target_uri,
+        opts.db,
+        opts.colls,
+        opts.collection_concurrent,
+        opts.doc_concurrent,
+        opts.record_collection,
+    );
+    info!("Use the following config to sync database: {:?}", conf);
+
     let syncer = MongoSyncer::new(Connection::new(Arc::new(conf)).unwrap());
-    syncer.sync()?;
-    Ok(())*/
+    info!("Begin to sync database.");
+    syncer.sync().unwrap();
     Ok(())
 }

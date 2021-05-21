@@ -7,6 +7,7 @@ use crossbeam::channel::{self, Receiver, Sender};
 use mongodb::options::{FindOneOptions, UpdateOptions};
 use rayon::{ThreadPool, ThreadPoolBuilder};
 use std::sync::Arc;
+use tracing::info;
 
 pub struct MongoSyncer {
     manager: SyncManager,
@@ -84,12 +85,21 @@ impl SyncManager {
 
     pub fn sync_full(&self) -> Result<()> {
         let oplog_start = self.get_latest_oplog_ts()?;
+        info!("Full state: begin to sync databases");
         self.sync_documents_full()?;
+        info!("Full state: sync database complete, begin to apply oplogs.");
         let oplog_end = self.get_latest_oplog_ts()?;
+        info!("Full state: begin to fetch oplogs");
         let oplogs = self.fetch_oplogs(oplog_start, oplog_end)?;
+        info!("Full state: Fetch oplog complete");
         self.check_logs_valid(&oplogs)?;
+        info!("Full state: Filter and apply oplogs");
+        // FIXME: before apply, need to filter oplogs, because some oplogs can't be applied.
+        // TODO: need careful design for apply_logs...
         self.apply_logs(oplogs)?;
+        info!("Full state: Apply oplogs complete");
         self.write_log_record(oplog_end)?;
+        info!("Full state: Write oplog end point complete, goes into incremental mode");
         Ok(())
     }
 
@@ -170,7 +180,7 @@ impl SyncManager {
                     .oplog_coll()
                     .find_one(
                         None,
-                        FindOneOptions::builder().sort(doc! {"natural": 1}).build(),
+                        FindOneOptions::builder().sort(doc! {"$natural": 1}).build(),
                     )?
                     .map(|log| {
                         // unwrap here is ok because oplog always contains `ts` field.
@@ -204,9 +214,9 @@ impl SyncManager {
 
     fn get_one_oplog_ts(&self, latest: bool) -> Result<Timestamp> {
         let sorted_doc = if latest {
-            doc! {"natural": -1}
+            doc! {"$natural": -1}
         } else {
-            doc! {"natural": 1}
+            doc! {"$natural": 1}
         };
 
         self.conn
