@@ -1,6 +1,7 @@
 use crate::config_v2::DbSyncConf;
 use crate::error::{Result, SyncError};
-use mongodb::sync::{Client, Database, Collection};
+use crate::{ADMIN_DB_NAME, OPLOG_COLL, OPLOG_DB};
+use mongodb::sync::{Client, Collection, Database};
 use std::sync::Arc;
 
 #[derive(Clone)]
@@ -34,11 +35,19 @@ impl Connection {
     }
 
     pub fn time_record_coll(&self) -> Collection {
-        self.get_target_db().collection(self.inner.config.get_record_collection())
+        self.get_target_db()
+            .collection(self.inner.config.get_record_collection())
     }
 
     pub fn oplog_coll(&self) -> Collection {
-        self.inner.source_conn.database("local").collection("oplog.rs")
+        self.inner
+            .source_conn
+            .database(OPLOG_DB)
+            .collection(OPLOG_COLL)
+    }
+
+    pub fn get_target_admin_db(&self) -> Database {
+        self.inner.target_conn.database(ADMIN_DB_NAME)
     }
 
     pub fn get_conf(&self) -> Arc<DbSyncConf> {
