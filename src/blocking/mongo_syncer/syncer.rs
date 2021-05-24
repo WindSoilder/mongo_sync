@@ -91,16 +91,40 @@ impl SyncManager {
         let oplog_end = self.get_latest_oplog_ts()?;
         info!("Full state: begin to fetch oplogs");
         let oplogs = self.fetch_oplogs(oplog_start, oplog_end)?;
+        let oplogs = self.filter_oplogs(oplogs);
         info!("Full state: Fetch oplog complete");
-        self.check_logs_valid(&oplogs)?;
-        info!("Full state: Filter and apply oplogs");
-        // FIXME: before apply, need to filter oplogs, because some oplogs can't be applied.
-        // TODO: need careful design for apply_logs...
-        self.apply_logs(oplogs)?;
-        info!("Full state: Apply oplogs complete");
+        if !oplogs.is_empty() {
+            // FIXME: before apply, need to filter oplogs, because some oplogs can't be applied.
+            // TODO: need careful design for apply_logs...
+            info!("Full state: Filter and apply oplogs");
+            self.check_logs_valid(&oplogs)?;
+            self.apply_logs(oplogs)?;
+            info!("Full state: Apply oplogs complete");
+        }
         self.write_log_record(oplog_end)?;
         info!("Full state: Write oplog end point complete, goes into incremental mode");
         Ok(())
+    }
+
+    fn filter_oplogs(&self, oplogs: Vec<Document>) -> Vec<Document> {
+        let conf = self.conn.get_conf();
+        let sync_db = conf.get_db();
+        match self.conn.get_conf().get_colls() {
+            // just need to filter oplogs which namespaces starts by 'given db'
+            None => oplogs
+                .into_iter()
+                .filter(|x| x.get_str(NAMESPACE_KEY).unwrap().starts_with(sync_db))
+                .collect(),
+            Some(colls) => oplogs
+                .into_iter()
+                .filter(|x| {
+                    let (db_name, coll_name) =
+                        x.get_str(NAMESPACE_KEY).unwrap().split_once(".").unwrap();
+                    db_name == sync_db
+                        && (coll_name == "$cmd" || colls.iter().any(|x| x == coll_name))
+                })
+                .collect(),
+        }
     }
 
     fn sync_documents_full(&self) -> Result<()> {
