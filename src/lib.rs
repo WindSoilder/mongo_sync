@@ -8,6 +8,10 @@ const ADMIN_DB_NAME: &str = "admin";
 const OPLOG_DB: &str = "local";
 const OPLOG_COLL: &str = "oplog.rs";
 
+// local oplog storage database, and collection name
+const LOG_STORAGE_DB: &str = "source_oplog";
+const LOG_STORAGE_COLL: &str = "source_oplog";
+
 // oplog relative key.
 const NAMESPACE_KEY: &str = "ns";
 const TIMESTAMP_KEY: &str = "ts";

@@ -1,6 +1,6 @@
 use crate::config_v2::DbSyncConf;
 use crate::error::{Result, SyncError};
-use crate::{ADMIN_DB_NAME, OPLOG_COLL, OPLOG_DB};
+use crate::{ADMIN_DB_NAME, LOG_STORAGE_COLL, LOG_STORAGE_DB, OPLOG_COLL, OPLOG_DB};
 use mongodb::sync::{Client, Collection, Database};
 use std::sync::Arc;
 
@@ -13,10 +13,12 @@ impl Connection {
     pub fn new(config: Arc<DbSyncConf>) -> Result<Connection> {
         let source_conn = Client::with_uri_str(config.get_src_url())?;
         let target_conn = Client::with_uri_str(config.get_dst_url())?;
+        let oplog_storage_conn = Client::with_uri_str(config.get_oplog_storage_url())?;
         Ok(Connection {
             inner: ConnectionInner {
                 source_conn,
                 target_conn,
+                oplog_storage_conn,
                 config,
             },
         })
@@ -41,9 +43,9 @@ impl Connection {
 
     pub fn oplog_coll(&self) -> Collection {
         self.inner
-            .source_conn
-            .database(OPLOG_DB)
-            .collection(OPLOG_COLL)
+            .oplog_storage_conn
+            .database(LOG_STORAGE_DB)
+            .collection(LOG_STORAGE_COLL)
     }
 
     pub fn get_target_admin_db(&self) -> Database {
@@ -59,6 +61,7 @@ impl Connection {
 struct ConnectionInner {
     source_conn: Client,
     target_conn: Client,
+    oplog_storage_conn: Client,
     config: Arc<DbSyncConf>,
 }
 

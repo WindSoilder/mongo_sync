@@ -1,5 +1,8 @@
 use super::oplog_helper;
-use crate::{Result, NAMESPACE_KEY, NOOP_OP, OPLOG_COLL, OPLOG_DB, OP_KEY, TIMESTAMP_KEY};
+use crate::{
+    Result, LOG_STORAGE_COLL, LOG_STORAGE_DB, NAMESPACE_KEY, NOOP_OP, OPLOG_COLL, OPLOG_DB, OP_KEY,
+    TIMESTAMP_KEY,
+};
 use bson::doc;
 use mongodb::bson::{Document, Timestamp};
 use mongodb::options::{CursorType, FindOptions};
@@ -13,8 +16,6 @@ pub struct OplogSyncer {
     storage_conn: Client,
 }
 
-const LOG_STORAGE_DB: &str = "source_oplog";
-const LOG_STORAGE_COLL: &str = "source_oplog";
 const TRUNCATE_POINT_COLL: &str = "oplog_truncate_after_point";
 
 impl OplogSyncer {
@@ -58,7 +59,7 @@ impl OplogSyncer {
                 None,
             )?;
         }
-        self.sync_incr_forever()?;
+        self.sync_incr_forever()
     }
 
     fn sync_incr_forever(self) -> Result<()> {

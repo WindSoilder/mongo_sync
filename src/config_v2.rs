@@ -91,6 +91,7 @@ fn half_number_of_cpus() -> usize {
 #[derive(Debug)]
 pub struct DbSyncConf {
     src: Src,
+    oplog_storage: OplogStorage,
     conf: DetailSyncConf,
 }
 
@@ -98,6 +99,7 @@ impl DbSyncConf {
     pub fn new(
         src_uri: String,
         target_uri: String,
+        oplog_storage_uri: String,
         db: String,
         colls: Option<Vec<String>>,
         collection_concurrent: Option<usize>,
@@ -106,6 +108,11 @@ impl DbSyncConf {
     ) -> Self {
         DbSyncConf {
             src: Src { url: src_uri },
+            oplog_storage: {
+                OplogStorage {
+                    uri: oplog_storage_uri,
+                }
+            },
             conf: DetailSyncConf {
                 dst_url: target_uri,
                 db,
@@ -123,6 +130,10 @@ impl DbSyncConf {
 
     pub fn get_record_collection(&self) -> &str {
         "oplog_records"
+    }
+
+    pub fn get_oplog_storage_url(&self) -> &str {
+        &self.oplog_storage.uri
     }
 
     pub fn get_dst_url(&self) -> &str {

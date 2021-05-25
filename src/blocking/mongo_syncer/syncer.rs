@@ -2,7 +2,7 @@ use super::full::{sync_one_concurrent, sync_one_serial, SyncTableStatus};
 use super::oplog_helper;
 use crate::blocking::connection::Connection;
 use crate::error::{Result, SyncError};
-use crate::{NAMESPACE_KEY, NOOP_OP, OPLOG_COLL, OPLOG_DB, OP_KEY, TIMESTAMP_KEY};
+use crate::{NAMESPACE_KEY, NOOP_OP, OP_KEY, TIMESTAMP_KEY};
 use bson::{doc, Document, Timestamp};
 use crossbeam::channel::{self, Receiver, Sender};
 use mongodb::options::{FindOneOptions, UpdateOptions};
@@ -48,7 +48,6 @@ impl MongoSyncer {
             // self.manager.write_time_record()?;
             self.sync_incremental()?;
         }
-        Ok(())
     }
 }
 
@@ -142,11 +141,10 @@ impl SyncManager {
         };
         let total = coll_names.len();
 
-        for coll in coll_names.into_iter() {
+        for coll in coll_names.iter() {
             let sender = sender.clone();
-            let source_coll = src_db.collection(&coll);
-            let target_coll = target_db.collection(&coll);
-            // ??? Maybe we need to put these operation into threads.
+            let source_coll = src_db.collection(coll);
+            let target_coll = target_db.collection(coll);
             let doc_count = source_coll.estimated_document_count(None)? as usize;
             target_coll.drop(None)?;
 
@@ -186,7 +184,21 @@ impl SyncManager {
             }
         }
 
-        // TODO: create index.
+        // We rebuild index in this main thread, because build index operation seems like to lock the whole database
+        // and build index in the sub-thread is meanless.
+        info!("Full state: Begin to re-build index for target collection");
+        for coll in coll_names.iter() {
+            let indexes = src_db.run_command(doc! { "listIndexes": coll }, None)?;
+            let indexes = indexes.get_document("cursor")?.get_array("firstBatch")?;
+            // FIXME: will have problem when we have many indexes, using firstBatch is not enough.
+            target_db.run_command(
+                doc! {
+                    "createIndexes": coll,
+                    "indexes": indexes,
+                },
+                None,
+            )?;
+        }
         Ok(())
     }
 

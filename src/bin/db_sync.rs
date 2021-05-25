@@ -12,6 +12,8 @@ struct Opts {
     #[clap(short, long)]
     target_uri: String,
     #[clap(short, long)]
+    oplog_storage_uri: String,
+    #[clap(short, long)]
     db: String,
     #[clap(short, long)]
     colls: Option<Vec<String>>,
@@ -31,6 +33,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let conf: DbSyncConf = DbSyncConf::new(
         opts.src_uri,
         opts.target_uri,
+        opts.oplog_storage_uri,
         opts.db,
         opts.colls,
         opts.collection_concurrent,
