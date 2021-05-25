@@ -29,3 +29,25 @@ fn get_one_oplog_ts(coll: &Collection, natural: Natural) -> Result<Timestamp> {
         })
         .unwrap_or_else(|| Err(SyncError::EmptyDocError))
 }
+
+pub fn get_earliest_ts_no_capped(coll: &Collection) -> Result<Timestamp> {
+    get_one_oplog_ts_no_capped(coll, Natural::Earliest)
+}
+
+pub fn get_latest_ts_no_capped(coll: &Collection) -> Result<Timestamp> {
+    get_one_oplog_ts_no_capped(coll, Natural::Latest)
+}
+
+fn get_one_oplog_ts_no_capped(coll: &Collection, natural: Natural) -> Result<Timestamp> {
+    let sorted_doc = match natural {
+        Natural::Earliest => doc! {TIMESTAMP_KEY: 1},
+        Natural::Latest => doc! {TIMESTAMP_KEY: -1},
+    };
+
+    coll.find_one(None, FindOneOptions::builder().sort(sorted_doc).build())?
+        .map(|d| {
+            d.get_timestamp(TIMESTAMP_KEY)
+                .map_err(|e| SyncError::BsonError(e))
+        })
+        .unwrap_or_else(|| Err(SyncError::EmptyDocError))
+}

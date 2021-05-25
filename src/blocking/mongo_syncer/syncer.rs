@@ -2,7 +2,7 @@ use super::full::{sync_one_concurrent, sync_one_serial, SyncTableStatus};
 use super::oplog_helper;
 use crate::blocking::connection::Connection;
 use crate::error::{Result, SyncError};
-use crate::{NAMESPACE_KEY, NOOP_OP, OP_KEY, TIMESTAMP_KEY};
+use crate::{NAMESPACE_KEY, TIMESTAMP_KEY};
 use bson::{doc, Document, Timestamp};
 use crossbeam::channel::{self, Receiver, Sender};
 use mongodb::options::{FindOneOptions, UpdateOptions};
@@ -36,7 +36,7 @@ impl MongoSyncer {
     }
 
     pub fn sync_incremental(&self) -> Result<()> {
-        unimplemented!()
+        self.manager.sync_incr()
     }
 
     pub fn sync(self) -> Result<()> {
@@ -84,11 +84,11 @@ impl SyncManager {
     }
 
     pub fn sync_full(&self) -> Result<()> {
-        let oplog_start = oplog_helper::get_latest_ts(&self.conn.oplog_coll())?;
+        let oplog_start = oplog_helper::get_latest_ts_no_capped(&self.conn.oplog_coll())?;
         info!("Full state: begin to sync databases");
         self.sync_documents_full()?;
         info!("Full state: sync database complete, begin to apply oplogs.");
-        let oplog_end = oplog_helper::get_latest_ts(&self.conn.oplog_coll())?;
+        let oplog_end = oplog_helper::get_latest_ts_no_capped(&self.conn.oplog_coll())?;
         info!("Full state: begin to fetch oplogs");
         let oplogs = self.fetch_oplogs(oplog_start, oplog_end)?;
         let oplogs = self.filter_oplogs(oplogs);
@@ -232,11 +232,39 @@ impl SyncManager {
     }
 
     pub fn sync_incr(&self) -> Result<()> {
-        unimplemented!()
-        // read a batch of oplog.
-        // convert these oplog into db operations.
-        // warn: if we meet command, should block and execute these command first(one by one).
-        // do bulk_write.
+        let oplog_coll = self.conn.oplog_coll();
+        let sleep_secs = std::time::Duration::from_secs(3);
+
+        loop {
+            let start_point = self
+                .conn
+                .time_record_coll()
+                .find_one(None, None)?
+                .unwrap()
+                .get_timestamp(TIMESTAMP_KEY)
+                .unwrap();
+            let end_point = oplog_coll
+                .find_one(
+                    doc! {},
+                    FindOneOptions::builder()
+                        .sort(doc! {TIMESTAMP_KEY: -1})
+                        .build(),
+                )?
+                .unwrap()
+                .get_timestamp(TIMESTAMP_KEY)
+                .unwrap();
+
+            let oplogs = self.fetch_oplogs(start_point, end_point)?;
+            if !oplogs.is_empty() {
+                info!("Incr state: Filter and apply oplogs");
+                let oplogs = self.filter_oplogs(oplogs);
+                self.apply_logs(oplogs)?;
+                info!("Incr state: Apply oplogs complete");
+            }
+            self.write_log_record(end_point)?;
+            // For every loop we just sleep 3 seconds, to make less frequency query to mongodb.
+            std::thread::sleep(sleep_secs);
+        }
     }
 
     fn fetch_oplogs(&self, start_ts: Timestamp, end_ts: Timestamp) -> Result<Vec<Document>> {
@@ -248,30 +276,14 @@ impl SyncManager {
         let mut result = vec![];
         for doc in cursor {
             let doc = doc?;
-            if !self.should_ignore_oplog(&doc)? {
-                result.push(doc)
-            }
+            result.push(doc)
         }
         Ok(result)
     }
 
-    fn should_ignore_oplog(&self, doc: &Document) -> Result<bool> {
-        // ignore due to namespace useless.
-        let ns = doc.get_str(NAMESPACE_KEY)?;
-        if ns.starts_with("config.cache.")
-            || ns == "config.system.sessions"
-            || ns == "ocnfig.system.indexBuilds"
-        {
-            return Ok(true);
-        }
-        // ignore due to NOOP_OP.
-        let op = doc.get_str(OP_KEY)?;
-        Ok(op == NOOP_OP)
-    }
-
     fn check_logs_valid(&self, oplogs: &[Document]) -> Result<bool> {
         // just fetch oplog start point, if the start point is less than given oplogs, we can make sure that these oplogs is still valid.
-        let earliest_ts = oplog_helper::get_earliest_ts(&self.conn.oplog_coll())?;
+        let earliest_ts = oplog_helper::get_earliest_ts_no_capped(&self.conn.oplog_coll())?;
         Ok(earliest_ts < oplogs[0].get_timestamp(TIMESTAMP_KEY)?)
     }
 
