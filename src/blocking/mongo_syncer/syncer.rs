@@ -94,8 +94,6 @@ impl SyncManager {
         let oplogs = self.filter_oplogs(oplogs);
         info!("Full state: Fetch oplog complete");
         if !oplogs.is_empty() {
-            // FIXME: before apply, need to filter oplogs, because some oplogs can't be applied.
-            // TODO: need careful design for apply_logs...
             info!("Full state: Filter and apply oplogs");
             self.check_logs_valid(&oplogs)?;
             self.apply_logs(oplogs)?;
