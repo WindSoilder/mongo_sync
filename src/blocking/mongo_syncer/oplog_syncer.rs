@@ -1,8 +1,9 @@
-use crate::Result;
+use super::oplog_helper;
+use crate::{Result, NAMESPACE_KEY, NOOP_OP, OPLOG_COLL, OPLOG_DB, OP_KEY, TIMESTAMP_KEY};
 use bson::doc;
 use mongodb::bson::{Document, Timestamp};
 use mongodb::options::{CursorType, FindOptions};
-use mongodb::sync::{Client, Collection};
+use mongodb::sync::{Client, Collection, Database};
 use std::time::SystemTime;
 use tracing::info;
 
@@ -14,14 +15,7 @@ pub struct OplogSyncer {
 
 const LOG_STORAGE_DB: &str = "source_oplog";
 const LOG_STORAGE_COLL: &str = "source_oplog";
-const REPLICA_OPLOG_DB: &str = "local";
-const REPLICA_OPLOG_COLL: &str = "oplog.rs";
-const OPLOG_TRUNCATE_AFTER_POINT: &str = "oplog_truncate_after_point";
-
-const NAMESPACE_KEY: &str = "ns";
-const TIMESTAMP_KEY: &str = "ts";
-const OP_KEY: &str = "op";
-const NOOP_OP: &str = "n";
+const TRUNCATE_POINT_COLL: &str = "oplog_truncate_after_point";
 
 impl OplogSyncer {
     pub fn new(src_uri: &str, storage_uri: &str) -> Result<OplogSyncer> {
@@ -35,50 +29,69 @@ impl OplogSyncer {
     }
 
     pub fn sync_forever(self) -> Result<()> {
-        let storage_db = self.storage_conn.database(LOG_STORAGE_DB);
-        // [TODO]: create index for storage_coll.
-        let storage_coll = storage_db.collection(LOG_STORAGE_COLL);
-        let oplog_truncate_after_point = storage_db.collection(OPLOG_TRUNCATE_AFTER_POINT);
+        let storage_latest_ts_may_exists = self.get_storage_latest_ts()?;
+        let source_oplog_earliest = oplog_helper::get_earliest_ts(
+            &self.source_conn.database(OPLOG_DB).collection(OPLOG_COLL),
+        )?;
 
-        let source_coll = self
-            .source_conn
-            .database(REPLICA_OPLOG_DB)
-            .collection(REPLICA_OPLOG_COLL);
+        let log_storage_coll = self.get_log_storage_coll();
+        let truncate_point_coll = self.get_truncate_point_coll();
+        // it means that there are some oplogs missing, we can never fetch oplogs between `storage_latest_ts` and `source_oplog_earliest`
+        if storage_latest_ts_may_exists.is_none()
+            || storage_latest_ts_may_exists.unwrap() < source_oplog_earliest
+        {
+            info!("Some oplog missing! Begin to re-initialize our local storage database");
+            // Initialize our database, to make sure that everything clean.
+            log_storage_coll.drop(None)?;
+            truncate_point_coll.drop(None)?;
+
+            self.get_log_storage_db().run_command(
+                doc! {
+                    "createIndexes": LOG_STORAGE_COLL,
+                    "indexes": [
+                        {
+                            "key": { TIMESTAMP_KEY: 1 },
+                            "name": format!("{}_1", TIMESTAMP_KEY),
+                        },
+                    ]
+                },
+                None,
+            )?;
+        }
+        self.sync_incr_forever()?;
+    }
+
+    fn sync_incr_forever(self) -> Result<()> {
+        let truncate_point_coll = self.get_log_storage_coll();
+        let log_storage_coll = self.get_log_storage_coll();
+
+        let truncate_ts = truncate_point_coll
+            .find_one(None, None)?
+            .map(|d| d.get_timestamp(TIMESTAMP_KEY).unwrap());
+
+        let source_coll = self.get_source_oplog_coll();
+        let start_point = match truncate_ts {
+            None => oplog_helper::get_latest_ts(&source_coll)?,
+            Some(t) => {
+                info!(truncate_ts=?t, "Truncate oplog after given point. ");
+                log_storage_coll.delete_many(doc! {TIMESTAMP_KEY: {"$gte": t}}, None)?;
+                t
+            }
+        };
 
         const BATCH_DELAY: u64 = 3; // save data every 3 seconds.
-
-        // remove dirty data, some oplogs may exists after our recorded truncate point.
-        const MIN_TS: Timestamp = Timestamp {
-            time: 0,
-            increment: 0,
-        };
-        let truncate_ts = oplog_truncate_after_point
-            .find_one(None, None)?
-            .unwrap_or(doc! {"ts": MIN_TS})
-            .get_timestamp(TIMESTAMP_KEY)?;
-        info!(?truncate_ts, "Truncate oplog after given point. ");
-        storage_coll.delete_many(doc! {TIMESTAMP_KEY: {"$gte": truncate_ts}}, None)?;
-        info!(start_time = ?truncate_ts, "Begin to sync oplog. ");
-
+        info!(?start_point, "Begin to sync oplog. ");
         // fetch and sync oplog.
-        let cursor = if truncate_ts == MIN_TS {
-            source_coll.find(
-                doc! {TIMESTAMP_KEY: {"$gte": truncate_ts}},
-                FindOptions::builder()
-                    .cursor_type(CursorType::TailableAwait)
-                    .build(),
-            )?
-        } else {
-            source_coll.find(
-                doc! {TIMESTAMP_KEY: {"$gte": truncate_ts}},
-                FindOptions::builder()
-                    .cursor_type(CursorType::TailableAwait)
-                    .build(),
-            )?
-        };
-
+        let cursor = source_coll.find(
+            doc! {TIMESTAMP_KEY: {"$gte": start_point}},
+            FindOptions::builder()
+                .cursor_type(CursorType::TailableAwait)
+                .build(),
+        )?;
+        info!(?start_point, "Initial fetch oplog complete. ");
         let mut now = SystemTime::now();
         let mut oplog_batched: Vec<Document> = vec![];
+        const BATCH_SIZE: usize = 10000;
         for doc in cursor {
             let doc = doc?;
 
@@ -86,20 +99,23 @@ impl OplogSyncer {
                 oplog_batched.push(doc);
             }
 
-            if now.elapsed().unwrap().as_secs() >= BATCH_DELAY && !oplog_batched.is_empty() {
+            if (oplog_batched.len() > BATCH_SIZE)
+                || (now.elapsed().unwrap().as_secs() >= BATCH_DELAY && !oplog_batched.is_empty())
+            {
                 let latest_ts =
                     oplog_batched[oplog_batched.len() - 1].get_timestamp(TIMESTAMP_KEY)?;
                 let earliest_ts = oplog_batched[0].get_timestamp(TIMESTAMP_KEY)?;
 
                 let mut data_to_write: Vec<Document> = Vec::with_capacity(oplog_batched.len());
                 std::mem::swap(&mut oplog_batched, &mut data_to_write);
-                storage_coll.insert_many(data_to_write, None)?;
+                info!("{}", data_to_write.len());
+                log_storage_coll.insert_many(data_to_write, None)?;
 
-                info!(?earliest_ts, ?latest_ts, "Sync oplog complete. ");
+                info!(?earliest_ts, ?latest_ts, "Sync oplog. ");
                 oplog_batched.clear();
-                self.save_latest_ts(&oplog_truncate_after_point, latest_ts)?;
+                self.save_latest_ts(&truncate_point_coll, latest_ts)?;
 
-                info!(?latest_ts, "Write truncate after point complete. ");
+                info!(?latest_ts, "Write truncate after point. ");
 
                 now = SystemTime::now();
             }
@@ -130,5 +146,28 @@ impl OplogSyncer {
                 || ns.starts_with("local.")
                 || ns.starts_with("config.")
                 || (ns.starts_with(LOG_STORAGE_DB))))
+    }
+
+    fn get_log_storage_coll(&self) -> Collection {
+        self.get_log_storage_db().collection(LOG_STORAGE_COLL)
+    }
+
+    fn get_truncate_point_coll(&self) -> Collection {
+        self.get_log_storage_db().collection(TRUNCATE_POINT_COLL)
+    }
+
+    fn get_log_storage_db(&self) -> Database {
+        self.storage_conn.database(LOG_STORAGE_DB)
+    }
+
+    fn get_source_oplog_coll(&self) -> Collection {
+        self.source_conn.database(OPLOG_DB).collection(OPLOG_COLL)
+    }
+
+    fn get_storage_latest_ts(&self) -> Result<Option<Timestamp>> {
+        Ok(self
+            .get_truncate_point_coll()
+            .find_one(None, None)?
+            .map(|d| d.get_timestamp(TIMESTAMP_KEY).unwrap()))
     }
 }

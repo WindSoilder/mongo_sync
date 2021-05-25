@@ -20,12 +20,8 @@ pub enum SyncError {
     BsonValueError { key: String, val: String },
     #[error("Receiver task message error")]
     ReceiveStatusError(#[from] RecvError),
-    #[error("Can't fetch doc from mongodb, url: {url:?}, namespace: {db:?}.{coll:?}")]
-    EmptyDocError {
-        url: String,
-        db: String,
-        coll: String,
-    },
+    #[error("Can't fetch doc from mongodb")]
+    EmptyDocError,
 }
 
 pub type Result<T> = StdResult<T, SyncError>;

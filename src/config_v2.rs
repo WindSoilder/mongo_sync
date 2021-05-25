@@ -19,6 +19,7 @@ use serde::Deserialize;
 #[derive(Deserialize, Debug)]
 pub struct SyncerConfig {
     src: Src,
+    oplog_storage: OplogStorage,
     sync: Vec<DetailSyncConf>,
 }
 
@@ -28,9 +29,19 @@ impl SyncerConfig {
         &self.src.url
     }
 
+    pub fn get_oplog_storage_uri(&self) -> &str {
+        &self.oplog_storage.uri
+    }
+
     pub fn get_detail_sync_conf(&self) -> &Vec<DetailSyncConf> {
         &self.sync
     }
+}
+
+#[derive(Deserialize, Debug)]
+pub struct OplogStorage {
+    /// Oplog storage uri
+    uri: String,
 }
 
 /// Source database configuration.

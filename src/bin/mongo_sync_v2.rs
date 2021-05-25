@@ -20,6 +20,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let data = std::fs::read(opts.conf).unwrap();
     let conf: SyncerConfig = toml::from_slice(&data).unwrap();
 
+    let oplog_syncer: OplogSyncer =
+        OplogSyncer::new(conf.get_src_url(), conf.get_oplog_storage_uri())?;
+    oplog_syncer.sync_forever()?;
     // iterate through syncer configuration, and start new mongo_sync via command line.
     Ok(())
 }

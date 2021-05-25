@@ -1,4 +1,5 @@
 use super::full::{sync_one_concurrent, sync_one_serial, SyncTableStatus};
+use super::oplog_helper;
 use crate::blocking::connection::Connection;
 use crate::error::{Result, SyncError};
 use crate::{NAMESPACE_KEY, NOOP_OP, OPLOG_COLL, OPLOG_DB, OP_KEY, TIMESTAMP_KEY};
@@ -84,11 +85,11 @@ impl SyncManager {
     }
 
     pub fn sync_full(&self) -> Result<()> {
-        let oplog_start = self.get_latest_oplog_ts()?;
+        let oplog_start = oplog_helper::get_latest_ts(&self.conn.oplog_coll())?;
         info!("Full state: begin to sync databases");
         self.sync_documents_full()?;
         info!("Full state: sync database complete, begin to apply oplogs.");
-        let oplog_end = self.get_latest_oplog_ts()?;
+        let oplog_end = oplog_helper::get_latest_ts(&self.conn.oplog_coll())?;
         info!("Full state: begin to fetch oplogs");
         let oplogs = self.fetch_oplogs(oplog_start, oplog_end)?;
         let oplogs = self.filter_oplogs(oplogs);
@@ -228,37 +229,6 @@ impl SyncManager {
         // do bulk_write.
     }
 
-    fn get_latest_oplog_ts(&self) -> Result<Timestamp> {
-        self.get_one_oplog_ts(true)
-    }
-
-    fn get_earliest_oplog_ts(&self) -> Result<Timestamp> {
-        self.get_one_oplog_ts(false)
-    }
-
-    fn get_one_oplog_ts(&self, latest: bool) -> Result<Timestamp> {
-        let sorted_doc = if latest {
-            doc! {"$natural": -1}
-        } else {
-            doc! {"$natural": 1}
-        };
-
-        self.conn
-            .oplog_coll()
-            .find_one(None, FindOneOptions::builder().sort(sorted_doc).build())?
-            .map(|d| {
-                d.get_timestamp(TIMESTAMP_KEY)
-                    .map_err(|e| SyncError::BsonError(e))
-            })
-            .unwrap_or_else(|| {
-                Err(SyncError::EmptyDocError {
-                    url: self.conn.get_conf().get_src_url().to_string(),
-                    db: OPLOG_DB.to_string(),
-                    coll: OPLOG_COLL.to_string(),
-                })
-            })
-    }
-
     fn fetch_oplogs(&self, start_ts: Timestamp, end_ts: Timestamp) -> Result<Vec<Document>> {
         let cursor = self
             .conn
@@ -291,7 +261,7 @@ impl SyncManager {
 
     fn check_logs_valid(&self, oplogs: &[Document]) -> Result<bool> {
         // just fetch oplog start point, if the start point is less than given oplogs, we can make sure that these oplogs is still valid.
-        let earliest_ts = self.get_earliest_oplog_ts()?;
+        let earliest_ts = oplog_helper::get_earliest_ts(&self.conn.oplog_coll())?;
         Ok(earliest_ts < oplogs[0].get_timestamp(TIMESTAMP_KEY)?)
     }
 
