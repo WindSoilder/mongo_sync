@@ -150,5 +150,9 @@ pub fn sync_one_serial(source_coll: Collection, target_coll: Collection) -> Resu
             target_coll.insert_many(data_to_write, None)?;
         }
     }
+
+    if !buffer.is_empty() {
+        target_coll.insert_many(buffer, None)?;
+    }
     Ok(())
 }

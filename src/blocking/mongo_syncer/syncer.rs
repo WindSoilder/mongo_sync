@@ -254,6 +254,10 @@ impl SyncManager {
                 .get_timestamp(TIMESTAMP_KEY)
                 .unwrap();
 
+            if start_point > end_point {
+                // TODO: data corrupted occured, handle for this.
+            }
+
             let oplogs = self.fetch_oplogs(start_point, end_point)?;
             if !oplogs.is_empty() {
                 info!("Incr state: Filter and apply oplogs");

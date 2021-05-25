@@ -1,6 +1,6 @@
 use crate::config_v2::DbSyncConf;
 use crate::error::{Result, SyncError};
-use crate::{ADMIN_DB_NAME, LOG_STORAGE_COLL, LOG_STORAGE_DB, OPLOG_COLL, OPLOG_DB};
+use crate::{ADMIN_DB_NAME, LOG_STORAGE_COLL, LOG_STORAGE_DB};
 use mongodb::sync::{Client, Collection, Database};
 use std::sync::Arc;
 
