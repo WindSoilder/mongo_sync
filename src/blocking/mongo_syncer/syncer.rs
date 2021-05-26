@@ -74,79 +74,6 @@ impl SyncManager {
         }
     }
 
-    // get mapping between `collection name` and `uuid` in given `database`.
-    fn get_collection_uuids(&self, database: &Database) -> Result<HashMap<String, Uuid>> {
-        let mut name_to_uuid: HashMap<String, Uuid> = HashMap::new();
-        let cursor = database.list_collections(doc! {}, None)?;
-
-        // Collection info object:
-        // { name: `collection_name`, info: {uuid: `uuid`} }
-        for doc in cursor {
-            let doc = doc?;
-            let coll_name = doc.get_str("name")?;
-            let uuid = doc.get_document("info")?.get("uuid").unwrap();
-            let uuid = match uuid {
-                bson::Bson::Binary(b) => b,
-                _ => panic!(
-                    "Invalid bson data in list_collections response, get {:?}",
-                    doc
-                ),
-            };
-            name_to_uuid.insert(
-                coll_name.to_string(),
-                Uuid::from_slice(&uuid.bytes)
-                    .expect("Get invalid uuid bytes in list_collections response"),
-            );
-        }
-        Ok(name_to_uuid)
-    }
-
-    // generate uuid mapping between source database collection and target database collection
-    // we need this mapping to make `applyOps` command works.
-    fn get_uuid_mapping(&self) -> Result<HashMap<Uuid, Uuid>> {
-        let (src_db, target_db) = (self.conn.get_src_db(), self.conn.get_target_db());
-        let src_name_uuid = self.get_collection_uuids(&src_db)?;
-        let mut target_name_uuid = self.get_collection_uuids(&target_db)?;
-
-        let mut uuid_mapping = HashMap::new();
-        for (src_name, src_uuid) in src_name_uuid {
-            let target_uuid_maybe = target_name_uuid.remove(&src_name);
-            if let Some(target_uuid) = target_uuid_maybe {
-                uuid_mapping.insert(src_uuid, target_uuid);
-            }
-        }
-        Ok(uuid_mapping)
-    }
-
-    fn map_oplog_uuids(
-        &self,
-        oplogs: &mut Vec<Document>,
-        uuid_mapping: &HashMap<Uuid, Uuid>,
-    ) -> Result<()> {
-        for op in oplogs.iter_mut() {
-            let uuid = op.get("ui").expect("Oplogs must contains ui key");
-            let uuid = match uuid {
-                bson::Bson::Binary(b) => {
-                    Uuid::from_slice(&b.bytes).expect("Get invalid uuid bytes in oplog item")
-                }
-                _ => panic!("Invalid bson data in oplog body, get {:?}", op),
-            };
-
-            if uuid_mapping.contains_key(&uuid) {
-                op.insert(
-                    "ui",
-                    Binary {
-                        subtype: bson::spec::BinarySubtype::Uuid,
-                        bytes: uuid_mapping.get(&uuid).unwrap().as_bytes().to_vec(),
-                    },
-                );
-            } else {
-                // TODO: This should not happened....
-            }
-        }
-        Ok(())
-    }
-
     pub fn sync_full(&self) -> Result<()> {
         let oplog_start = oplog_helper::get_latest_ts_no_capped(&self.conn.oplog_coll())?;
         info!("Full state: begin to sync databases");
@@ -168,101 +95,6 @@ impl SyncManager {
         }
         self.write_log_record(oplog_end)?;
         info!("Full state: Write oplog end point complete, goes into incremental mode");
-        Ok(())
-    }
-
-    fn filter_oplogs(&self, oplogs: Vec<Document>) -> Vec<Document> {
-        let conf = self.conn.get_conf();
-        let sync_db = conf.get_db();
-        match self.conn.get_conf().get_colls() {
-            // just need to filter oplogs which namespaces starts by 'given db'
-            None => oplogs
-                .into_iter()
-                .filter(|x| x.get_str(NAMESPACE_KEY).unwrap().starts_with(sync_db))
-                .collect(),
-            Some(colls) => oplogs
-                .into_iter()
-                .filter(|x| {
-                    let (db_name, coll_name) =
-                        x.get_str(NAMESPACE_KEY).unwrap().split_once(".").unwrap();
-                    db_name == sync_db
-                        && (coll_name == "$cmd" || colls.iter().any(|x| x == coll_name))
-                })
-                .collect(),
-        }
-    }
-
-    fn sync_documents_full(&self) -> Result<()> {
-        let conf = self.conn.get_conf();
-        let coll_concurrent = conf.get_collection_concurrent();
-        let doc_concurrent = conf.get_doc_concurrent();
-        let (sender, receiver) = channel::bounded(coll_concurrent);
-        let (src_db, target_db) = (self.conn.get_src_db(), self.conn.get_target_db());
-
-        let coll_names = match self.conn.get_conf().get_colls() {
-            // use unwrap here is ok, because we have check list_collection_names before.
-            None => src_db.list_collection_names(None).unwrap(),
-            Some(colls) => colls.clone(),
-        };
-        let total = coll_names.len();
-
-        for coll in coll_names.iter() {
-            let sender = sender.clone();
-            let source_coll = src_db.collection(coll);
-            let target_coll = target_db.collection(coll);
-            let doc_count = source_coll.estimated_document_count(None)? as usize;
-            target_coll.drop(None)?;
-
-            if doc_count <= LARGE_COLL_SIZE {
-                self.pool.spawn(move || {
-                    if let Err(e) = sync_one_serial(source_coll, target_coll) {
-                        let _ = sender.send(SyncTableStatus::Failed(e));
-                    }
-                    let _ = sender.send(SyncTableStatus::Done);
-                })
-            } else {
-                let coll_pool = self.coll_sync_pool.clone();
-                self.pool.spawn(move || {
-                    if let Err(e) =
-                        sync_one_concurrent(source_coll, target_coll, doc_concurrent, coll_pool)
-                    {
-                        let _ = sender.send(SyncTableStatus::Failed(e));
-                    }
-                    let _ = sender.send(SyncTableStatus::Done);
-                })
-            }
-        }
-
-        let mut complete_count = 0;
-        while let Ok(event) = receiver.recv() {
-            match event {
-                SyncTableStatus::Done => {
-                    complete_count += 1;
-                    if total == complete_count {
-                        break;
-                    }
-                }
-                SyncTableStatus::Failed(e) => {
-                    return Err(e);
-                }
-            }
-        }
-
-        // We rebuild index in this main thread, because build index operation seems like to lock the whole database
-        // and build index in the sub-thread is meanless.
-        info!("Full state: Begin to re-build index for target collection");
-        for coll in coll_names.iter() {
-            let indexes = src_db.run_command(doc! { "listIndexes": coll }, None)?;
-            let indexes = indexes.get_document("cursor")?.get_array("firstBatch")?;
-            // FIXME: will have problem when we have many indexes, using firstBatch is not enough.
-            target_db.run_command(
-                doc! {
-                    "createIndexes": coll,
-                    "indexes": indexes,
-                },
-                None,
-            )?;
-        }
         Ok(())
     }
 
@@ -354,6 +186,27 @@ impl SyncManager {
         Ok(result)
     }
 
+    fn filter_oplogs(&self, oplogs: Vec<Document>) -> Vec<Document> {
+        let conf = self.conn.get_conf();
+        let sync_db = conf.get_db();
+        match self.conn.get_conf().get_colls() {
+            // just need to filter oplogs which namespaces starts by 'given db'
+            None => oplogs
+                .into_iter()
+                .filter(|x| x.get_str(NAMESPACE_KEY).unwrap().starts_with(sync_db))
+                .collect(),
+            Some(colls) => oplogs
+                .into_iter()
+                .filter(|x| {
+                    let (db_name, coll_name) =
+                        x.get_str(NAMESPACE_KEY).unwrap().split_once(".").unwrap();
+                    db_name == sync_db
+                        && (coll_name == "$cmd" || colls.iter().any(|x| x == coll_name))
+                })
+                .collect(),
+        }
+    }
+
     fn check_logs_valid(&self, oplogs: &[Document]) -> Result<bool> {
         // just fetch oplog start point, if the start point is less than given oplogs, we can make sure that these oplogs is still valid.
         let earliest_ts = oplog_helper::get_earliest_ts_no_capped(&self.conn.oplog_coll())?;
@@ -376,6 +229,158 @@ impl SyncManager {
             doc! { "$set": {"ts": log_ts} },
             UpdateOptions::builder().upsert(true).build(),
         )?;
+        Ok(())
+    }
+
+    fn sync_documents_full(&self) -> Result<()> {
+        let src_db = self.conn.get_src_db();
+        let coll_names = match self.conn.get_conf().get_colls() {
+            // use unwrap here is ok, because we have check list_collection_names before.
+            None => src_db.list_collection_names(None).unwrap(),
+            Some(colls) => colls.clone(),
+        };
+
+        self.sync_documents_for_collections(&coll_names)
+    }
+
+    fn sync_documents_for_collections(&self, coll_names: &[String]) -> Result<()> {
+        let conf = self.conn.get_conf();
+        let coll_concurrent = conf.get_collection_concurrent();
+        let doc_concurrent = conf.get_doc_concurrent();
+        let (sender, receiver) = channel::bounded(coll_concurrent);
+        let (src_db, target_db) = (self.conn.get_src_db(), self.conn.get_target_db());
+
+        let total = coll_names.len();
+        for coll in coll_names.iter() {
+            let sender = sender.clone();
+            let source_coll = src_db.collection(coll);
+            let target_coll = target_db.collection(coll);
+            let doc_count = source_coll.estimated_document_count(None)? as usize;
+            target_coll.drop(None)?;
+
+            if doc_count <= LARGE_COLL_SIZE {
+                self.pool.spawn(move || {
+                    if let Err(e) = sync_one_serial(source_coll, target_coll) {
+                        let _ = sender.send(SyncTableStatus::Failed(e));
+                    }
+                    let _ = sender.send(SyncTableStatus::Done);
+                })
+            } else {
+                let coll_pool = self.coll_sync_pool.clone();
+                self.pool.spawn(move || {
+                    if let Err(e) =
+                        sync_one_concurrent(source_coll, target_coll, doc_concurrent, coll_pool)
+                    {
+                        let _ = sender.send(SyncTableStatus::Failed(e));
+                    }
+                    let _ = sender.send(SyncTableStatus::Done);
+                })
+            }
+        }
+
+        let mut complete_count = 0;
+        while let Ok(event) = receiver.recv() {
+            match event {
+                SyncTableStatus::Done => {
+                    complete_count += 1;
+                    if total == complete_count {
+                        break;
+                    }
+                }
+                SyncTableStatus::Failed(e) => {
+                    return Err(e);
+                }
+            }
+        }
+
+        // We rebuild index in this main thread, because build index operation seems like to lock the whole database
+        // and build index in the sub-thread is meanless.
+        info!("Full state: Begin to re-build index for target collection");
+        for coll in coll_names.iter() {
+            let indexes = src_db.run_command(doc! { "listIndexes": coll }, None)?;
+            let indexes = indexes.get_document("cursor")?.get_array("firstBatch")?;
+            // FIXME: will have problem when we have many indexes, using firstBatch is not enough.
+            target_db.run_command(
+                doc! {
+                    "createIndexes": coll,
+                    "indexes": indexes,
+                },
+                None,
+            )?;
+        }
+        Ok(())
+    }
+
+    // get mapping between `collection name` and `uuid` in given `database`.
+    fn get_collection_uuids(&self, database: &Database) -> Result<HashMap<String, Uuid>> {
+        let mut name_to_uuid: HashMap<String, Uuid> = HashMap::new();
+        let cursor = database.list_collections(doc! {}, None)?;
+
+        // Collection info object:
+        // { name: `collection_name`, info: {uuid: `uuid`} }
+        for doc in cursor {
+            let doc = doc?;
+            let coll_name = doc.get_str("name")?;
+            let uuid = doc.get_document("info")?.get("uuid").unwrap();
+            let uuid = match uuid {
+                bson::Bson::Binary(b) => b,
+                _ => panic!(
+                    "Invalid bson data in list_collections response, get {:?}",
+                    doc
+                ),
+            };
+            name_to_uuid.insert(
+                coll_name.to_string(),
+                Uuid::from_slice(&uuid.bytes)
+                    .expect("Get invalid uuid bytes in list_collections response"),
+            );
+        }
+        Ok(name_to_uuid)
+    }
+
+    // generate uuid mapping between source database collection and target database collection
+    // we need this mapping to make `applyOps` command works.
+    fn get_uuid_mapping(&self) -> Result<HashMap<Uuid, Uuid>> {
+        let (src_db, target_db) = (self.conn.get_src_db(), self.conn.get_target_db());
+        let src_name_uuid = self.get_collection_uuids(&src_db)?;
+        let mut target_name_uuid = self.get_collection_uuids(&target_db)?;
+
+        let mut uuid_mapping = HashMap::new();
+        for (src_name, src_uuid) in src_name_uuid {
+            let target_uuid_maybe = target_name_uuid.remove(&src_name);
+            if let Some(target_uuid) = target_uuid_maybe {
+                uuid_mapping.insert(src_uuid, target_uuid);
+            }
+        }
+        Ok(uuid_mapping)
+    }
+
+    fn map_oplog_uuids(
+        &self,
+        oplogs: &mut Vec<Document>,
+        uuid_mapping: &HashMap<Uuid, Uuid>,
+    ) -> Result<()> {
+        for op in oplogs.iter_mut() {
+            let uuid = op.get("ui").expect("Oplogs must contains ui key");
+            let uuid = match uuid {
+                bson::Bson::Binary(b) => {
+                    Uuid::from_slice(&b.bytes).expect("Get invalid uuid bytes in oplog item")
+                }
+                _ => panic!("Invalid bson data in oplog body, get {:?}", op),
+            };
+
+            if uuid_mapping.contains_key(&uuid) {
+                op.insert(
+                    "ui",
+                    Binary {
+                        subtype: bson::spec::BinarySubtype::Uuid,
+                        bytes: uuid_mapping.get(&uuid).unwrap().as_bytes().to_vec(),
+                    },
+                );
+            } else {
+                // TODO: This should not happened....
+            }
+        }
         Ok(())
     }
 }
