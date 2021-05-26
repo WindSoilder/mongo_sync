@@ -1,4 +1,4 @@
-use super::oplog_helper;
+use super::{oplog_helper, time_helper};
 use crate::{
     Result, LOG_STORAGE_COLL, LOG_STORAGE_DB, NAMESPACE_KEY, NOOP_OP, OPLOG_COLL, OPLOG_DB, OP_KEY,
     TIMESTAMP_KEY,
@@ -74,14 +74,18 @@ impl OplogSyncer {
         let start_point = match truncate_ts {
             None => oplog_helper::get_latest_ts(&source_coll)?,
             Some(t) => {
-                info!(truncate_ts=?t, "Truncate oplog after given point. ");
+                // just use for log...
+                let t_for_log = time_helper::to_datetime(&t);
+                info!(truncate_ts=?t_for_log, "Truncate oplog after given point. ");
                 log_storage_coll.delete_many(doc! {TIMESTAMP_KEY: {"$gte": t}}, None)?;
                 t
             }
         };
 
+        // `start_time` just use for log...
+        let start_time = time_helper::to_datetime(&start_point);
         const BATCH_DELAY: u64 = 3; // save data every 3 seconds.
-        info!(?start_point, "Begin to sync oplog. ");
+        info!(%start_time, "Begin to sync oplog. ");
         // fetch and sync oplog.
         let cursor = source_coll.find(
             doc! {TIMESTAMP_KEY: {"$gte": start_point}},
@@ -89,7 +93,7 @@ impl OplogSyncer {
                 .cursor_type(CursorType::TailableAwait)
                 .build(),
         )?;
-        info!(?start_point, "Initial fetch oplog complete. ");
+        info!(%start_time, "Initial fetch oplog complete. ");
         let mut now = SystemTime::now();
         let mut oplog_batched: Vec<Document> = vec![];
         const BATCH_SIZE: usize = 10000;
@@ -103,20 +107,24 @@ impl OplogSyncer {
             if (oplog_batched.len() > BATCH_SIZE)
                 || (now.elapsed().unwrap().as_secs() >= BATCH_DELAY && !oplog_batched.is_empty())
             {
+                let earliest_ts = oplog_batched[0].get_timestamp(TIMESTAMP_KEY)?;
                 let latest_ts =
                     oplog_batched[oplog_batched.len() - 1].get_timestamp(TIMESTAMP_KEY)?;
-                let earliest_ts = oplog_batched[0].get_timestamp(TIMESTAMP_KEY)?;
+
+                // just use for log..
+                let earliest_time = time_helper::to_datetime(&earliest_ts);
+                let latest_time = time_helper::to_datetime(&latest_ts);
 
                 let mut data_to_write: Vec<Document> = Vec::with_capacity(oplog_batched.len());
                 std::mem::swap(&mut oplog_batched, &mut data_to_write);
                 info!("{}", data_to_write.len());
                 log_storage_coll.insert_many(data_to_write, None)?;
 
-                info!(?earliest_ts, ?latest_ts, "Sync oplog. ");
+                info!(%earliest_time, %latest_time, "Sync oplog. ");
                 oplog_batched.clear();
                 self.save_latest_ts(&truncate_point_coll, latest_ts)?;
 
-                info!(?latest_ts, "Write truncate after point. ");
+                info!(%latest_time, "Write truncate after point. ");
 
                 now = SystemTime::now();
             }
