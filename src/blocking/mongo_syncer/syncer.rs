@@ -1,5 +1,5 @@
 use super::full::{sync_one_concurrent, sync_one_serial, SyncTableStatus};
-use super::oplog_helper;
+use super::{oplog_helper, time_helper};
 use crate::blocking::connection::Connection;
 use crate::error::{Result, SyncError};
 use crate::{NAMESPACE_KEY, TIMESTAMP_KEY};
@@ -157,15 +157,19 @@ impl SyncManager {
                 // TODO: data corrupted occured, handle for this.
             }
 
+            // only used for log...
+            let start_time = time_helper::to_datetime(&start_point);
+            let end_time = time_helper::to_datetime(&end_point);
+
             let mut oplogs = self.fetch_oplogs(start_point, end_point)?;
             self.map_oplog_uuids(&mut oplogs, &uuid_mapping)?;
             if !oplogs.is_empty() {
-                info!("Incr state: Filter and apply oplogs");
+                info!(%start_time, %end_time, "Incr state: Filter and apply oplogs ");
                 let oplogs = self.filter_oplogs(oplogs);
                 self.apply_logs(oplogs)?;
-                info!("Incr state: Apply oplogs complete");
+                info!(%start_time, %end_time, "Incr state: Apply oplogs complete ");
             }
-            info!("Write oplog records");
+            info!(%end_time, "Write oplog records");
             self.write_log_record(end_point)?;
             // For every loop we just sleep 3 seconds, to make less frequency query to mongodb.
             std::thread::sleep(sleep_secs);
