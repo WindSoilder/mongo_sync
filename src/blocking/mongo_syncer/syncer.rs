@@ -3,36 +3,31 @@ use super::oplog_helper;
 use crate::blocking::connection::Connection;
 use crate::error::{Result, SyncError};
 use crate::{NAMESPACE_KEY, TIMESTAMP_KEY};
-use bson::{doc, Document, Timestamp};
-use crossbeam::channel::{self, Receiver, Sender};
+use bson::{doc, Binary, Document, Timestamp};
+use crossbeam::channel;
 use mongodb::options::{FindOneOptions, UpdateOptions};
+use mongodb::sync::Database;
 use rayon::{ThreadPool, ThreadPoolBuilder};
+use std::collections::HashMap;
 use std::sync::Arc;
 use tracing::info;
+use uuid::Uuid;
 
 pub struct MongoSyncer {
     manager: SyncManager,
-    receiver: Receiver<ManagerTaskStatus>,
 }
 
 const LARGE_COLL_SIZE: usize = 10000;
 
 impl MongoSyncer {
     pub fn new(conn: Connection) -> MongoSyncer {
-        let (sender, receiver) = channel::bounded(1);
         MongoSyncer {
-            manager: SyncManager::new(conn, sender),
-            receiver,
+            manager: SyncManager::new(conn),
         }
     }
 
     pub fn sync_full(&self) -> Result<()> {
-        self.manager.sync_full()?;
-
-        match self.receiver.recv() {
-            Ok(_) => Ok(()),
-            Err(e) => Err(SyncError::ReceiveStatusError(e)),
-        }
+        self.manager.sync_full()
     }
 
     pub fn sync_incremental(&self) -> Result<()> {
@@ -40,36 +35,32 @@ impl MongoSyncer {
     }
 
     pub fn sync(self) -> Result<()> {
-        loop {
-            // check time record missing.
-            if self.manager.is_time_record_missing()? {
-                self.sync_full()?;
-            }
-            // self.manager.write_time_record()?;
-            self.sync_incremental()?;
+        // check time record missing.
+        if self.manager.is_time_record_missing()? {
+            self.sync_full()?;
+        } else {
+            // Although we are in increment state, but we may need to full sync some collection.
+            // Example:
+            // The first time we only want to sync collection `A`, `B`.
+            // But this time we want to sync collection `A`, `B`, `C` (or full DB).
         }
+        self.sync_incremental()
     }
-}
-
-enum ManagerTaskStatus {
-    Done,
 }
 
 struct SyncManager {
     conn: Connection,
     pool: ThreadPool,
     coll_sync_pool: Arc<ThreadPool>,
-    sender: Sender<ManagerTaskStatus>,
 }
 
 impl SyncManager {
-    pub fn new(conn: Connection, sender: Sender<ManagerTaskStatus>) -> SyncManager {
+    pub fn new(conn: Connection) -> SyncManager {
         let conf = conn.get_conf();
         let coll_concurrent = conf.get_collection_concurrent();
         let doc_concurrent = conf.get_doc_concurrent();
         SyncManager {
             conn,
-            sender,
             coll_sync_pool: Arc::new(
                 ThreadPoolBuilder::new()
                     .num_threads(doc_concurrent)
@@ -83,6 +74,79 @@ impl SyncManager {
         }
     }
 
+    // get mapping between `collection name` and `uuid` in given `database`.
+    fn get_collection_uuids(&self, database: &Database) -> Result<HashMap<String, Uuid>> {
+        let mut name_to_uuid: HashMap<String, Uuid> = HashMap::new();
+        let cursor = database.list_collections(doc! {}, None)?;
+
+        // Collection info object:
+        // { name: `collection_name`, info: {uuid: `uuid`} }
+        for doc in cursor {
+            let doc = doc?;
+            let coll_name = doc.get_str("name")?;
+            let uuid = doc.get_document("info")?.get("uuid").unwrap();
+            let uuid = match uuid {
+                bson::Bson::Binary(b) => b,
+                _ => panic!(
+                    "Invalid bson data in list_collections response, get {:?}",
+                    doc
+                ),
+            };
+            name_to_uuid.insert(
+                coll_name.to_string(),
+                Uuid::from_slice(&uuid.bytes)
+                    .expect("Get invalid uuid bytes in list_collections response"),
+            );
+        }
+        Ok(name_to_uuid)
+    }
+
+    // generate uuid mapping between source database collection and target database collection
+    // we need this mapping to make `applyOps` command works.
+    fn get_uuid_mapping(&self) -> Result<HashMap<Uuid, Uuid>> {
+        let (src_db, target_db) = (self.conn.get_src_db(), self.conn.get_target_db());
+        let src_name_uuid = self.get_collection_uuids(&src_db)?;
+        let mut target_name_uuid = self.get_collection_uuids(&target_db)?;
+
+        let mut uuid_mapping = HashMap::new();
+        for (src_name, src_uuid) in src_name_uuid {
+            let target_uuid_maybe = target_name_uuid.remove(&src_name);
+            if let Some(target_uuid) = target_uuid_maybe {
+                uuid_mapping.insert(src_uuid, target_uuid);
+            }
+        }
+        Ok(uuid_mapping)
+    }
+
+    fn map_oplog_uuids(
+        &self,
+        oplogs: &mut Vec<Document>,
+        uuid_mapping: &HashMap<Uuid, Uuid>,
+    ) -> Result<()> {
+        for op in oplogs.iter_mut() {
+            let uuid = op.get("ui").expect("Oplogs must contains ui key");
+            let uuid = match uuid {
+                bson::Bson::Binary(b) => {
+                    Uuid::from_slice(&b.bytes).expect("Get invalid uuid bytes in oplog item")
+                }
+                _ => panic!("Invalid bson data in oplog body, get {:?}", op),
+            };
+
+            if uuid_mapping.contains_key(&uuid) {
+                op.insert(
+                    "ui",
+                    Binary {
+                        subtype: bson::spec::BinarySubtype::Uuid,
+                        bytes: uuid_mapping.get(&uuid).unwrap().as_bytes().to_vec(),
+                    },
+                );
+            } else {
+                // TODO: This should not happened....
+            }
+        }
+        Ok(())
+    }
+
     pub fn sync_full(&self) -> Result<()> {
         let oplog_start = oplog_helper::get_latest_ts_no_capped(&self.conn.oplog_coll())?;
         info!("Full state: begin to sync databases");
@@ -91,7 +155,10 @@ impl SyncManager {
         let oplog_end = oplog_helper::get_latest_ts_no_capped(&self.conn.oplog_coll())?;
         info!("Full state: begin to fetch oplogs");
         let oplogs = self.fetch_oplogs(oplog_start, oplog_end)?;
-        let oplogs = self.filter_oplogs(oplogs);
+        let mut oplogs = self.filter_oplogs(oplogs);
+        let uuid_mapping = self.get_uuid_mapping()?;
+        self.map_oplog_uuids(&mut oplogs, &uuid_mapping)?;
+
         info!("Full state: Fetch oplog complete");
         if !oplogs.is_empty() {
             info!("Full state: Filter and apply oplogs");
@@ -172,7 +239,6 @@ impl SyncManager {
                 SyncTableStatus::Done => {
                     complete_count += 1;
                     if total == complete_count {
-                        let _ = self.sender.send(ManagerTaskStatus::Done);
                         break;
                     }
                 }
@@ -234,6 +300,7 @@ impl SyncManager {
     pub fn sync_incr(&self) -> Result<()> {
         let oplog_coll = self.conn.oplog_coll();
         let sleep_secs = std::time::Duration::from_secs(3);
+        let uuid_mapping = self.get_uuid_mapping()?;
 
         loop {
             let start_point = self
@@ -258,13 +325,15 @@ impl SyncManager {
                 // TODO: data corrupted occured, handle for this.
             }
 
-            let oplogs = self.fetch_oplogs(start_point, end_point)?;
+            let mut oplogs = self.fetch_oplogs(start_point, end_point)?;
+            self.map_oplog_uuids(&mut oplogs, &uuid_mapping)?;
             if !oplogs.is_empty() {
                 info!("Incr state: Filter and apply oplogs");
                 let oplogs = self.filter_oplogs(oplogs);
                 self.apply_logs(oplogs)?;
                 info!("Incr state: Apply oplogs complete");
             }
+            info!("Write oplog records");
             self.write_log_record(end_point)?;
             // For every loop we just sleep 3 seconds, to make less frequency query to mongodb.
             std::thread::sleep(sleep_secs);

@@ -63,7 +63,7 @@ impl OplogSyncer {
     }
 
     fn sync_incr_forever(self) -> Result<()> {
-        let truncate_point_coll = self.get_log_storage_coll();
+        let truncate_point_coll = self.get_truncate_point_coll();
         let log_storage_coll = self.get_log_storage_coll();
 
         let truncate_ts = truncate_point_coll
