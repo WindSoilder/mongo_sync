@@ -80,29 +80,15 @@ impl SyncManager {
         let start_time = time_helper::to_datetime(&oplog_start);
         info!(%start_time, "Full state: begin to sync databases. ");
         self.sync_documents_full()?;
-        info!("Full state: sync database complete, begin to apply oplogs.");
-        self.write_log_record(oplog_start)?;
-        let oplog_end = oplog_helper::get_latest_ts_no_capped(&self.conn.oplog_coll())?;
-        // just use for log..
-        let end_time = time_helper::to_datetime(&oplog_end);
-        info!(%start_time, %end_time, "Full state: begin to fetch oplogs");
-        let oplogs = self.fetch_oplogs(oplog_start, oplog_end)?;
-        info!(%start_time, %end_time, "Full state: Fetch oplog complete");
-        info!("Full state: Filter oplogs");
-        let src_db = self.conn.get_src_db();
-        let uuids = mongo_helper::get_uuids(&src_db, self.conn.get_conf().get_colls())?;
-        let mut oplogs = self.filter_oplogs(oplogs, &uuids);
-        let uuid_mapping = self.get_uuid_mapping()?;
-        bson_helper::map_oplog_uuids(&mut oplogs, &uuid_mapping)?;
+        info!(%start_time, "Full state: sync database complete, check oplog and write start point.");
 
-        if !oplogs.is_empty() {
-            info!(%start_time, %end_time, "Full state: apply oplogs.");
-            self.check_logs_valid(&oplogs)?;
-            self.apply_logs(oplogs)?;
-            info!(%start_time, %end_time, "Full state: Apply oplogs complete");
+        if self.check_log_valid(oplog_start)? {
+            self.write_log_record(oplog_start)?;
+            info!(%start_time, "Full state: swrite oplog start point complete, goes into incremental mode.")
+        } else {
+            panic!("Full state: oplog is no-longer valid, because they are not exists in database");
         }
-        self.write_log_record(oplog_end)?;
-        info!("Full state: Write oplog end point complete, goes into incremental mode");
+
         Ok(())
     }
 
@@ -230,10 +216,10 @@ impl SyncManager {
         }
     }
 
-    fn check_logs_valid(&self, oplogs: &[Document]) -> Result<bool> {
+    fn check_log_valid(&self, start_point: Timestamp) -> Result<bool> {
         // just fetch oplog start point, if the start point is less than given oplogs, we can make sure that these oplogs is still valid.
         let earliest_ts = oplog_helper::get_earliest_ts_no_capped(&self.conn.oplog_coll())?;
-        Ok(earliest_ts < oplogs[0].get_timestamp(TIMESTAMP_KEY)?)
+        Ok(earliest_ts < start_point)
     }
 
     fn apply_logs(&self, oplogs: Vec<Document>) -> Result<()> {
