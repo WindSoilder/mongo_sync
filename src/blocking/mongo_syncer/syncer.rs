@@ -1,9 +1,9 @@
 use super::full::{sync_one_concurrent, sync_one_serial, SyncTableStatus};
-use super::{oplog_helper, time_helper};
+use super::{bson_helper, oplog_helper, time_helper};
 use crate::blocking::connection::Connection;
 use crate::error::{Result, SyncError};
 use crate::{NAMESPACE_KEY, TIMESTAMP_KEY};
-use bson::{doc, Binary, Document, Timestamp};
+use bson::{doc, Document, Timestamp};
 use crossbeam::channel;
 use mongodb::options::{FindOneOptions, UpdateOptions};
 use mongodb::sync::Database;
@@ -316,7 +316,7 @@ impl SyncManager {
     }
 
     // get mapping between `collection name` and `uuid` in given `database`.
-    fn get_collection_uuids(&self, database: &Database) -> Result<HashMap<String, Uuid>> {
+    fn get_coll_name_to_uuid(&self, database: &Database) -> Result<HashMap<String, Uuid>> {
         let mut name_to_uuid: HashMap<String, Uuid> = HashMap::new();
         let cursor = database.list_collections(doc! {}, None)?;
 
@@ -325,19 +325,8 @@ impl SyncManager {
         for doc in cursor {
             let doc = doc?;
             let coll_name = doc.get_str("name")?;
-            let uuid = doc.get_document("info")?.get("uuid").unwrap();
-            let uuid = match uuid {
-                bson::Bson::Binary(b) => b,
-                _ => panic!(
-                    "Invalid bson data in list_collections response, get {:?}",
-                    doc
-                ),
-            };
-            name_to_uuid.insert(
-                coll_name.to_string(),
-                Uuid::from_slice(&uuid.bytes)
-                    .expect("Get invalid uuid bytes in list_collections response"),
-            );
+            let uuid = bson_helper::get_uuid(doc.get_document("info")?, "uuid")?;
+            name_to_uuid.insert(coll_name.to_string(), uuid);
         }
         Ok(name_to_uuid)
     }
@@ -346,8 +335,8 @@ impl SyncManager {
     // we need this mapping to make `applyOps` command works.
     fn get_uuid_mapping(&self) -> Result<HashMap<Uuid, Uuid>> {
         let (src_db, target_db) = (self.conn.get_src_db(), self.conn.get_target_db());
-        let src_name_uuid = self.get_collection_uuids(&src_db)?;
-        let mut target_name_uuid = self.get_collection_uuids(&target_db)?;
+        let src_name_uuid = self.get_coll_name_to_uuid(&src_db)?;
+        let mut target_name_uuid = self.get_coll_name_to_uuid(&target_db)?;
 
         let mut uuid_mapping = HashMap::new();
         for (src_name, src_uuid) in src_name_uuid {
@@ -365,21 +354,11 @@ impl SyncManager {
         uuid_mapping: &HashMap<Uuid, Uuid>,
     ) -> Result<()> {
         for op in oplogs.iter_mut() {
-            let uuid = op.get("ui").expect("Oplogs must contains ui key");
-            let uuid = match uuid {
-                bson::Bson::Binary(b) => {
-                    Uuid::from_slice(&b.bytes).expect("Get invalid uuid bytes in oplog item")
-                }
-                _ => panic!("Invalid bson data in oplog body, get {:?}", op),
-            };
-
+            let uuid = bson_helper::get_uuid(op, "ui")?;
             if uuid_mapping.contains_key(&uuid) {
                 op.insert(
                     "ui",
-                    Binary {
-                        subtype: bson::spec::BinarySubtype::Uuid,
-                        bytes: uuid_mapping.get(&uuid).unwrap().as_bytes().to_vec(),
-                    },
+                    bson_helper::new_binary(*uuid_mapping.get(&uuid).unwrap()),
                 );
             } else {
                 // TODO: This should not happened....
