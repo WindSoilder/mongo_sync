@@ -8,7 +8,7 @@ use crossbeam::channel;
 use mongodb::options::{FindOneOptions, UpdateOptions};
 use mongodb::sync::Database;
 use rayon::{ThreadPool, ThreadPoolBuilder};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tracing::info;
 use uuid::Uuid;
@@ -82,13 +82,16 @@ impl SyncManager {
         let oplog_end = oplog_helper::get_latest_ts_no_capped(&self.conn.oplog_coll())?;
         info!("Full state: begin to fetch oplogs");
         let oplogs = self.fetch_oplogs(oplog_start, oplog_end)?;
-        let mut oplogs = self.filter_oplogs(oplogs);
+        info!("Full state: Fetch oplog complete");
+        info!("Full state: Filter oplogs");
+        let src_db = self.conn.get_src_db();
+        let uuids = self.get_uuids(&src_db, self.conn.get_conf().get_colls())?;
+        let mut oplogs = self.filter_oplogs(oplogs, &uuids);
         let uuid_mapping = self.get_uuid_mapping()?;
         self.map_oplog_uuids(&mut oplogs, &uuid_mapping)?;
 
-        info!("Full state: Fetch oplog complete");
         if !oplogs.is_empty() {
-            info!("Full state: Filter and apply oplogs");
+            info!("Full state: apply oplogs.");
             self.check_logs_valid(&oplogs)?;
             self.apply_logs(oplogs)?;
             info!("Full state: Apply oplogs complete");
@@ -134,6 +137,8 @@ impl SyncManager {
         let sleep_secs = std::time::Duration::from_secs(3);
         let uuid_mapping = self.get_uuid_mapping()?;
 
+        let src_db = self.conn.get_src_db();
+        let uuids = self.get_uuids(&src_db, self.conn.get_conf().get_colls())?;
         loop {
             let start_point = self
                 .conn
@@ -165,7 +170,7 @@ impl SyncManager {
             self.map_oplog_uuids(&mut oplogs, &uuid_mapping)?;
             if !oplogs.is_empty() {
                 info!(%start_time, %end_time, "Incr state: Filter and apply oplogs ");
-                let oplogs = self.filter_oplogs(oplogs);
+                let oplogs = self.filter_oplogs(oplogs, &uuids);
                 self.apply_logs(oplogs)?;
                 info!(%start_time, %end_time, "Incr state: Apply oplogs complete ");
             }
@@ -190,7 +195,7 @@ impl SyncManager {
         Ok(result)
     }
 
-    fn filter_oplogs(&self, oplogs: Vec<Document>) -> Vec<Document> {
+    fn filter_oplogs(&self, oplogs: Vec<Document>, valid_uuids: &HashSet<Uuid>) -> Vec<Document> {
         let conf = self.conn.get_conf();
         let sync_db = conf.get_db();
         match self.conn.get_conf().get_colls() {
@@ -202,10 +207,10 @@ impl SyncManager {
             Some(colls) => oplogs
                 .into_iter()
                 .filter(|x| {
-                    let (db_name, coll_name) =
-                        x.get_str(NAMESPACE_KEY).unwrap().split_once(".").unwrap();
-                    db_name == sync_db
-                        && (coll_name == "$cmd" || colls.iter().any(|x| x == coll_name))
+                    valid_uuids.contains(
+                        &bson_helper::get_uuid(x, "ui")
+                            .expect("oplog item should contains 'ui' field."),
+                    )
                 })
                 .collect(),
         }
@@ -365,5 +370,23 @@ impl SyncManager {
             }
         }
         Ok(())
+    }
+
+    fn get_uuids(&self, db: &Database, colls: &Option<Vec<String>>) -> Result<HashSet<Uuid>> {
+        let coll_name_to_uuid = self.get_coll_name_to_uuid(db)?;
+        let uuids: HashSet<Uuid> = coll_name_to_uuid
+            .iter()
+            .filter_map(|(coll_name, uuid)| match colls {
+                None => Some(uuid.clone()),
+                Some(colls) => {
+                    if colls.iter().any(|x| x == coll_name) {
+                        Some(uuid.clone())
+                    } else {
+                        None
+                    }
+                }
+            })
+            .collect();
+        Ok(uuids)
     }
 }
