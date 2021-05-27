@@ -3,7 +3,7 @@ use super::{bson_helper, mongo_helper, oplog_helper, time_helper};
 use crate::blocking::connection::Connection;
 use crate::error::{Result, SyncError};
 use crate::{NAMESPACE_KEY, TIMESTAMP_KEY};
-use bson::{doc, Document, Timestamp};
+use bson::{doc, Bson, Document, Timestamp};
 use crossbeam::channel;
 use mongodb::options::{FindOneOptions, UpdateOptions};
 use rayon::{ThreadPool, ThreadPoolBuilder};
@@ -30,7 +30,7 @@ impl MongoSyncer {
     }
 
     pub fn sync_incremental(&self) -> Result<()> {
-        self.manager.sync_incr()
+        self.manager.sync_incr_forever()
     }
 
     pub fn sync(self) -> Result<()> {
@@ -42,7 +42,19 @@ impl MongoSyncer {
             // Example:
             // The first time we only want to sync collection `A`, `B`.
             // But this time we want to sync collection `A`, `B`, `C` (or full DB).
+            if let Some(new_colls) = self.manager.get_new_colls_to_sync()? {
+                info!(
+                    ?new_colls,
+                    "Get new collections to sync, apply oplogs until now. "
+                );
+                self.manager.sync_incr_to_now()?;
+                info!(?new_colls, "Make full sync for new collections. ");
+                self.manager.sync_documents_for_collections(&new_colls)?;
+            }
         }
+        // record sync collection arguments.
+        self.manager.write_sync_colls_args()?;
+
         self.sync_incremental()
     }
 }
@@ -123,7 +135,7 @@ impl SyncManager {
         }
     }
 
-    pub fn sync_incr(&self) -> Result<()> {
+    fn sync_incr(&self, forever: bool) -> Result<()> {
         let oplog_coll = self.conn.oplog_coll();
         let sleep_secs = std::time::Duration::from_secs(3);
         let uuid_mapping = self.get_uuid_mapping()?;
@@ -175,6 +187,10 @@ impl SyncManager {
             }
             info!(%end_time, "Incr state: Write oplog records");
             self.write_log_record(end_point)?;
+
+            if !forever {
+                return Ok(());
+            }
         }
     }
 
@@ -252,7 +268,15 @@ impl SyncManager {
         self.sync_documents_for_collections(&coll_names)
     }
 
-    fn sync_documents_for_collections(&self, coll_names: &[String]) -> Result<()> {
+    pub fn sync_incr_to_now(&self) -> Result<()> {
+        self.sync_incr(false)
+    }
+
+    pub fn sync_incr_forever(&self) -> Result<()> {
+        self.sync_incr(true)
+    }
+
+    pub fn sync_documents_for_collections(&self, coll_names: &[String]) -> Result<()> {
         let conf = self.conn.get_conf();
         let coll_concurrent = conf.get_collection_concurrent();
         let doc_concurrent = conf.get_doc_concurrent();
@@ -325,5 +349,66 @@ impl SyncManager {
     fn get_uuid_mapping(&self) -> Result<HashMap<Uuid, Uuid>> {
         let (src_db, target_db) = (self.conn.get_src_db(), self.conn.get_target_db());
         mongo_helper::get_uuid_mapping(&src_db, &target_db)
+    }
+
+    pub fn write_sync_colls_args(&self) -> Result<()> {
+        let target_db = self.conn.get_target_db();
+        let colls_to_sync = target_db.collection("colls_to_sync");
+        match self.conn.get_conf().get_colls() {
+            None => {
+                colls_to_sync.delete_many(doc! {}, None)?;
+            }
+            Some(coll_names) => {
+                colls_to_sync.insert_one(doc! {"names": coll_names}, None)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn get_previous_sync_colls_args(&self) -> Result<Option<HashSet<String>>> {
+        let target_db = self.conn.get_target_db();
+        let colls_to_sync = target_db.collection("colls_to_sync");
+        let item = colls_to_sync.find_one(doc! {}, None)?;
+        match item {
+            None => Ok(None),
+            Some(d) => Ok(Some(
+                d.get_array("names")
+                    .unwrap()
+                    .iter()
+                    .map(|x| match x {
+                        Bson::String(s) => s.clone(),
+                        _ => panic!("xxx"),
+                    })
+                    .collect(),
+            )),
+        }
+    }
+
+    pub fn get_new_colls_to_sync(&self) -> Result<Option<Vec<String>>> {
+        let origin_sync_colls = self.get_previous_sync_colls_args()?;
+        match origin_sync_colls {
+            None => Ok(None),
+            Some(origin_colls) => {
+                let src_db = self.conn.get_src_db();
+                let current_sync_colls: HashSet<String> = match self.conn.get_conf().get_colls() {
+                    // use unwrap here is ok, because we have check list_collection_names before.
+                    None => src_db
+                        .list_collection_names(None)
+                        .unwrap()
+                        .into_iter()
+                        .collect(),
+                    Some(colls) => colls.iter().map(|x| x.clone()).collect(),
+                };
+                let new_colls: Vec<String> = current_sync_colls
+                    .difference(&origin_colls)
+                    .map(|x| x.clone())
+                    .collect();
+                if new_colls.is_empty() {
+                    Ok(None)
+                } else {
+                    Ok(Some(new_colls))
+                }
+            }
+        }
     }
 }
