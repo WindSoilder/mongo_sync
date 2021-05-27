@@ -23,10 +23,7 @@ fn get_one_oplog_ts(coll: &Collection, natural: Natural) -> Result<Timestamp> {
     };
 
     coll.find_one(None, FindOneOptions::builder().sort(sorted_doc).build())?
-        .map(|d| {
-            d.get_timestamp(TIMESTAMP_KEY)
-                .map_err(|e| SyncError::BsonError(e))
-        })
+        .map(|d| d.get_timestamp(TIMESTAMP_KEY).map_err(SyncError::BsonError))
         .unwrap_or_else(|| Err(SyncError::EmptyDocError))
 }
 
@@ -45,9 +42,6 @@ fn get_one_oplog_ts_no_capped(coll: &Collection, natural: Natural) -> Result<Tim
     };
 
     coll.find_one(None, FindOneOptions::builder().sort(sorted_doc).build())?
-        .map(|d| {
-            d.get_timestamp(TIMESTAMP_KEY)
-                .map_err(|e| SyncError::BsonError(e))
-        })
+        .map(|d| d.get_timestamp(TIMESTAMP_KEY).map_err(SyncError::BsonError))
         .unwrap_or_else(|| Err(SyncError::EmptyDocError))
 }

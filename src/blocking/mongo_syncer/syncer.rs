@@ -250,7 +250,7 @@ impl SyncManager {
             .conn
             .get_target_admin_db()
             .run_command(doc! {"applyOps": oplogs}, None)
-            .map_err(|e| SyncError::MongoError(e))?;
+            .map_err(SyncError::MongoError)?;
         // TODO: parse running result.
         Ok(())
     }
@@ -405,11 +405,11 @@ impl SyncManager {
                         .unwrap()
                         .into_iter()
                         .collect(),
-                    Some(colls) => colls.iter().map(|x| x.clone()).collect(),
+                    Some(colls) => colls.iter().cloned().collect(),
                 };
                 let new_colls: Vec<String> = current_sync_colls
                     .difference(&origin_colls)
-                    .map(|x| x.clone())
+                    .cloned()
                     .collect();
                 if new_colls.is_empty() {
                     Ok(None)

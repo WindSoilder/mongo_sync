@@ -1,7 +1,6 @@
 use clap::Clap;
 use mongo_sync::OplogSyncer;
 use mongo_sync::SyncerConfig;
-use tracing::info;
 
 #[derive(Clap, Debug)]
 #[clap(version = env!("CARGO_PKG_VERSION"), author = env!("CARGO_PKG_AUTHORS"))]

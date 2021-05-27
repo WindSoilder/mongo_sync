@@ -1,6 +1,6 @@
 use super::bson_helper;
 use crate::Result;
-use bson::{doc, Timestamp};
+use bson::doc;
 use mongodb::sync::Database;
 use std::collections::{HashMap, HashSet};
 use uuid::Uuid;
@@ -13,10 +13,10 @@ pub fn get_uuids(db: &Database, colls: &Option<Vec<String>>) -> Result<HashSet<U
     let uuids: HashSet<Uuid> = coll_name_to_uuid
         .iter()
         .filter_map(|(coll_name, uuid)| match colls {
-            None => Some(uuid.clone()),
+            None => Some(*uuid),
             Some(colls) => {
                 if colls.iter().any(|x| x == coll_name) {
-                    Some(uuid.clone())
+                    Some(*uuid)
                 } else {
                     None
                 }

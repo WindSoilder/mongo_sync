@@ -117,9 +117,9 @@ impl DbSyncConf {
                 dst_url: target_uri,
                 db,
                 colls,
-                collection_concurrent: collection_concurrent.unwrap_or_else(|| number_of_cpus()),
-                doc_concurrent: doc_concurrent.unwrap_or_else(|| half_number_of_cpus()),
-                record_collection: record_collection.unwrap_or_else(|| default_record_collection()),
+                collection_concurrent: collection_concurrent.unwrap_or_else(number_of_cpus),
+                doc_concurrent: doc_concurrent.unwrap_or_else(half_number_of_cpus),
+                record_collection: record_collection.unwrap_or_else(default_record_collection),
             },
         }
     }
