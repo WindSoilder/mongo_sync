@@ -1,12 +1,11 @@
 use super::full::{sync_one_concurrent, sync_one_serial, SyncTableStatus};
-use super::{bson_helper, oplog_helper, time_helper};
+use super::{bson_helper, mongo_helper, oplog_helper, time_helper};
 use crate::blocking::connection::Connection;
 use crate::error::{Result, SyncError};
 use crate::{NAMESPACE_KEY, TIMESTAMP_KEY};
 use bson::{doc, Document, Timestamp};
 use crossbeam::channel;
 use mongodb::options::{FindOneOptions, UpdateOptions};
-use mongodb::sync::Database;
 use rayon::{ThreadPool, ThreadPoolBuilder};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -85,10 +84,10 @@ impl SyncManager {
         info!("Full state: Fetch oplog complete");
         info!("Full state: Filter oplogs");
         let src_db = self.conn.get_src_db();
-        let uuids = self.get_uuids(&src_db, self.conn.get_conf().get_colls())?;
+        let uuids = mongo_helper::get_uuids(&src_db, self.conn.get_conf().get_colls())?;
         let mut oplogs = self.filter_oplogs(oplogs, &uuids);
         let uuid_mapping = self.get_uuid_mapping()?;
-        self.map_oplog_uuids(&mut oplogs, &uuid_mapping)?;
+        bson_helper::map_oplog_uuids(&mut oplogs, &uuid_mapping)?;
 
         if !oplogs.is_empty() {
             info!("Full state: apply oplogs.");
@@ -138,7 +137,7 @@ impl SyncManager {
         let uuid_mapping = self.get_uuid_mapping()?;
 
         let src_db = self.conn.get_src_db();
-        let uuids = self.get_uuids(&src_db, self.conn.get_conf().get_colls())?;
+        let uuids = mongo_helper::get_uuids(&src_db, self.conn.get_conf().get_colls())?;
         loop {
             let start_point = self
                 .conn
@@ -167,7 +166,7 @@ impl SyncManager {
             let end_time = time_helper::to_datetime(&end_point);
 
             let mut oplogs = self.fetch_oplogs(start_point, end_point)?;
-            self.map_oplog_uuids(&mut oplogs, &uuid_mapping)?;
+            bson_helper::map_oplog_uuids(&mut oplogs, &uuid_mapping)?;
             if !oplogs.is_empty() {
                 info!(%start_time, %end_time, "Incr state: Filter and apply oplogs ");
                 let oplogs = self.filter_oplogs(oplogs, &uuids);
@@ -320,73 +319,10 @@ impl SyncManager {
         Ok(())
     }
 
-    // get mapping between `collection name` and `uuid` in given `database`.
-    fn get_coll_name_to_uuid(&self, database: &Database) -> Result<HashMap<String, Uuid>> {
-        let mut name_to_uuid: HashMap<String, Uuid> = HashMap::new();
-        let cursor = database.list_collections(doc! {}, None)?;
-
-        // Collection info object:
-        // { name: `collection_name`, info: {uuid: `uuid`} }
-        for doc in cursor {
-            let doc = doc?;
-            let coll_name = doc.get_str("name")?;
-            let uuid = bson_helper::get_uuid(doc.get_document("info")?, "uuid")?;
-            name_to_uuid.insert(coll_name.to_string(), uuid);
-        }
-        Ok(name_to_uuid)
-    }
-
     // generate uuid mapping between source database collection and target database collection
     // we need this mapping to make `applyOps` command works.
     fn get_uuid_mapping(&self) -> Result<HashMap<Uuid, Uuid>> {
         let (src_db, target_db) = (self.conn.get_src_db(), self.conn.get_target_db());
-        let src_name_uuid = self.get_coll_name_to_uuid(&src_db)?;
-        let mut target_name_uuid = self.get_coll_name_to_uuid(&target_db)?;
-
-        let mut uuid_mapping = HashMap::new();
-        for (src_name, src_uuid) in src_name_uuid {
-            let target_uuid_maybe = target_name_uuid.remove(&src_name);
-            if let Some(target_uuid) = target_uuid_maybe {
-                uuid_mapping.insert(src_uuid, target_uuid);
-            }
-        }
-        Ok(uuid_mapping)
-    }
-
-    fn map_oplog_uuids(
-        &self,
-        oplogs: &mut Vec<Document>,
-        uuid_mapping: &HashMap<Uuid, Uuid>,
-    ) -> Result<()> {
-        for op in oplogs.iter_mut() {
-            let uuid = bson_helper::get_uuid(op, "ui")?;
-            if uuid_mapping.contains_key(&uuid) {
-                op.insert(
-                    "ui",
-                    bson_helper::new_binary(*uuid_mapping.get(&uuid).unwrap()),
-                );
-            } else {
-                // TODO: This should not happened....
-            }
-        }
-        Ok(())
-    }
-
-    fn get_uuids(&self, db: &Database, colls: &Option<Vec<String>>) -> Result<HashSet<Uuid>> {
-        let coll_name_to_uuid = self.get_coll_name_to_uuid(db)?;
-        let uuids: HashSet<Uuid> = coll_name_to_uuid
-            .iter()
-            .filter_map(|(coll_name, uuid)| match colls {
-                None => Some(uuid.clone()),
-                Some(colls) => {
-                    if colls.iter().any(|x| x == coll_name) {
-                        Some(uuid.clone())
-                    } else {
-                        None
-                    }
-                }
-            })
-            .collect();
-        Ok(uuids)
+        mongo_helper::get_uuid_mapping(&src_db, &target_db)
     }
 }
