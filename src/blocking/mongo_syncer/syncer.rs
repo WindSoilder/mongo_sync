@@ -50,11 +50,11 @@ impl MongoSyncer {
                 self.manager.sync_incr_to_now()?;
                 info!(?new_colls, "Make full sync for new collections. ");
                 self.manager.sync_documents_for_collections(&new_colls)?;
+                info!(?new_colls, "Full sync for new collections complete, goes into incremental node. ");
             }
         }
         // record sync collection arguments.
         self.manager.write_sync_colls_args()?;
-
         self.sync_incremental()
     }
 }
@@ -96,7 +96,7 @@ impl SyncManager {
 
         if self.check_log_valid(oplog_start)? {
             self.write_log_record(oplog_start)?;
-            info!(%start_time, "Full state: swrite oplog start point complete, goes into incremental mode.")
+            info!(%start_time, "Full state: write oplog start point complete, goes into incremental mode.")
         } else {
             panic!("Full state: oplog is no-longer valid, because they are not exists in database");
         }
@@ -164,29 +164,29 @@ impl SyncManager {
                 .get_timestamp(TIMESTAMP_KEY)
                 .expect("oplog should contains a key named `ts`");
 
-            if start_point == end_point {
+            if start_point < end_point {
+                // only used for log...
+                let start_time = time_helper::to_datetime(&start_point);
+                let end_time = time_helper::to_datetime(&end_point);
+
+                info!(%start_time, "Begin fetch oplog");
+                let mut oplogs = self.fetch_oplogs(start_point, end_point)?;
+                info!(%end_time, "fetch oplog complete");
+                bson_helper::map_oplog_uuids(&mut oplogs, &uuid_mapping)?;
+
+                if !oplogs.is_empty() {
+                    info!(%start_time, %end_time, "Incr state: Filter and apply oplogs ");
+                    let oplogs = self.filter_oplogs(oplogs, &uuids);
+                    self.apply_logs(oplogs)?;
+                    info!(%start_time, %end_time, "Incr state: Apply oplogs complete ");
+                }
+                info!(%end_time, "Incr state: Write oplog records");
+                self.write_log_record(end_point)?;
+            } else if start_point == end_point {
                 info!("Incr state: No new oplogs available here, continue..");
-                continue;
+            } else {
+                // TODO: start_point > end_point, data corrupted occured, handle for this.
             }
-
-            if start_point > end_point {
-                // TODO: data corrupted occured, handle for this.
-            }
-
-            // only used for log...
-            let start_time = time_helper::to_datetime(&start_point);
-            let end_time = time_helper::to_datetime(&end_point);
-
-            let mut oplogs = self.fetch_oplogs(start_point, end_point)?;
-            bson_helper::map_oplog_uuids(&mut oplogs, &uuid_mapping)?;
-            if !oplogs.is_empty() {
-                info!(%start_time, %end_time, "Incr state: Filter and apply oplogs ");
-                let oplogs = self.filter_oplogs(oplogs, &uuids);
-                self.apply_logs(oplogs)?;
-                info!(%start_time, %end_time, "Incr state: Apply oplogs complete ");
-            }
-            info!(%end_time, "Incr state: Write oplog records");
-            self.write_log_record(end_point)?;
 
             if !forever {
                 return Ok(());
@@ -194,6 +194,7 @@ impl SyncManager {
         }
     }
 
+    // TODO: when `end_ts` - `start_ts` too large, fetch oplogs may goes into fail.
     fn fetch_oplogs(&self, start_ts: Timestamp, end_ts: Timestamp) -> Result<Vec<Document>> {
         let cursor = self
             .conn
@@ -359,6 +360,7 @@ impl SyncManager {
                 colls_to_sync.delete_many(doc! {}, None)?;
             }
             Some(coll_names) => {
+                colls_to_sync.delete_many(doc! {}, None)?;
                 colls_to_sync.insert_one(doc! {"names": coll_names}, None)?;
             }
         }
