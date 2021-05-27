@@ -9,7 +9,7 @@ use mongodb::options::{FindOneOptions, UpdateOptions};
 use rayon::{ThreadPool, ThreadPoolBuilder};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
-use tracing::info;
+use tracing::{info, warn};
 use uuid::Uuid;
 
 pub struct MongoSyncer {
@@ -172,10 +172,10 @@ impl SyncManager {
                 let start_time = time_helper::to_datetime(&start_point);
                 let end_time = time_helper::to_datetime(&end_point);
 
-                info!(%start_time, %end_time, "Begin fetch oplog. ");
+                info!(%start_time, %end_time, "Incr state: Begin fetch oplog. ");
                 // FIXME: when `end_ts` - `start_ts` too large, fetch oplogs may goes into fail.
                 let mut oplogs = self.fetch_oplogs(start_point, end_point)?;
-                info!(%start_time, %end_time, "fetch oplog complete. ");
+                info!(%start_time, %end_time, "Incr state: fetch oplog complete. ");
                 bson_helper::map_oplog_uuids(&mut oplogs, &uuid_mapping)?;
                 let oplogs = self.filter_oplogs(oplogs, &uuids);
                 info!(%start_time, %end_time, "Incr state: Filter oplogs. ");
