@@ -9,7 +9,7 @@ use mongodb::options::{FindOneOptions, UpdateOptions};
 use rayon::{ThreadPool, ThreadPoolBuilder};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
-use tracing::{info, warn};
+use tracing::info;
 use uuid::Uuid;
 
 pub struct MongoSyncer {
@@ -143,8 +143,9 @@ impl SyncManager {
         let sleep_secs = std::time::Duration::from_secs(3);
         let uuid_mapping = self.get_uuid_mapping()?;
 
-        let src_db = self.conn.get_src_db();
-        let uuids = mongo_helper::get_uuids(&src_db, self.conn.get_conf().get_colls())?;
+        let target_uuid = self.conn.get_target_db();
+        let uuids = mongo_helper::get_uuids(&target_uuid, self.conn.get_conf().get_colls())?;
+
         loop {
             // For every loop we just sleep 3 seconds, to make less frequency query to mongodb.
             std::thread::sleep(sleep_secs);
