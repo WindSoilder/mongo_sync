@@ -42,8 +42,8 @@ pub fn get_coll_name_to_uuid(db: &Database) -> Result<HashMap<String, Uuid>> {
     Ok(name_to_uuid)
 }
 
-// generate uuid mapping between source database collection and target database collection
-// we need this mapping to make `applyOps` command works.
+/// generate uuid mapping between source database collection and target database collection
+/// we need this mapping to make `applyOps` command works.
 pub fn get_uuid_mapping(src_db: &Database, target_db: &Database) -> Result<HashMap<Uuid, Uuid>> {
     let src_name_uuid = get_coll_name_to_uuid(&src_db)?;
     let mut target_name_uuid = get_coll_name_to_uuid(&target_db)?;

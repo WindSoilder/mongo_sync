@@ -75,13 +75,19 @@ impl SyncManager {
 
     pub fn sync_full(&self) -> Result<()> {
         let oplog_start = oplog_helper::get_latest_ts_no_capped(&self.conn.oplog_coll())?;
-        info!("Full state: begin to sync databases");
+
+        // just use for log..
+        let start_time = time_helper::to_datetime(&oplog_start);
+        info!(%start_time, "Full state: begin to sync databases. ");
         self.sync_documents_full()?;
         info!("Full state: sync database complete, begin to apply oplogs.");
+        self.write_log_record(oplog_start)?;
         let oplog_end = oplog_helper::get_latest_ts_no_capped(&self.conn.oplog_coll())?;
-        info!("Full state: begin to fetch oplogs");
+        // just use for log..
+        let end_time = time_helper::to_datetime(&oplog_end);
+        info!(%start_time, %end_time, "Full state: begin to fetch oplogs");
         let oplogs = self.fetch_oplogs(oplog_start, oplog_end)?;
-        info!("Full state: Fetch oplog complete");
+        info!(%start_time, %end_time, "Full state: Fetch oplog complete");
         info!("Full state: Filter oplogs");
         let src_db = self.conn.get_src_db();
         let uuids = mongo_helper::get_uuids(&src_db, self.conn.get_conf().get_colls())?;
@@ -90,10 +96,10 @@ impl SyncManager {
         bson_helper::map_oplog_uuids(&mut oplogs, &uuid_mapping)?;
 
         if !oplogs.is_empty() {
-            info!("Full state: apply oplogs.");
+            info!(%start_time, %end_time, "Full state: apply oplogs.");
             self.check_logs_valid(&oplogs)?;
             self.apply_logs(oplogs)?;
-            info!("Full state: Apply oplogs complete");
+            info!(%start_time, %end_time, "Full state: Apply oplogs complete");
         }
         self.write_log_record(oplog_end)?;
         info!("Full state: Write oplog end point complete, goes into incremental mode");
@@ -139,13 +145,16 @@ impl SyncManager {
         let src_db = self.conn.get_src_db();
         let uuids = mongo_helper::get_uuids(&src_db, self.conn.get_conf().get_colls())?;
         loop {
+            // For every loop we just sleep 3 seconds, to make less frequency query to mongodb.
+            std::thread::sleep(sleep_secs);
             let start_point = self
                 .conn
                 .time_record_coll()
                 .find_one(None, None)?
                 .unwrap()
                 .get_timestamp(TIMESTAMP_KEY)
-                .unwrap();
+                .expect("oplog should contains a key named `ts`");
+
             let end_point = oplog_coll
                 .find_one(
                     doc! {},
@@ -155,7 +164,12 @@ impl SyncManager {
                 )?
                 .unwrap()
                 .get_timestamp(TIMESTAMP_KEY)
-                .unwrap();
+                .expect("oplog should contains a key named `ts`");
+
+            if start_point == end_point {
+                info!("Incr state: No new oplogs available here, continue..");
+                continue;
+            }
 
             if start_point > end_point {
                 // TODO: data corrupted occured, handle for this.
@@ -173,10 +187,8 @@ impl SyncManager {
                 self.apply_logs(oplogs)?;
                 info!(%start_time, %end_time, "Incr state: Apply oplogs complete ");
             }
-            info!(%end_time, "Write oplog records");
+            info!(%end_time, "Incr state: Write oplog records");
             self.write_log_record(end_point)?;
-            // For every loop we just sleep 3 seconds, to make less frequency query to mongodb.
-            std::thread::sleep(sleep_secs);
         }
     }
 
@@ -203,9 +215,12 @@ impl SyncManager {
                 .into_iter()
                 .filter(|x| x.get_str(NAMESPACE_KEY).unwrap().starts_with(sync_db))
                 .collect(),
-            Some(colls) => oplogs
+            Some(_) => oplogs
                 .into_iter()
                 .filter(|x| {
+                    // filter by oplog 'ui'(collection uuid) field.
+                    // The benefit of using this field, we don't need to handle special case
+                    // like collection rename and insert.
                     valid_uuids.contains(
                         &bson_helper::get_uuid(x, "ui")
                             .expect("oplog item should contains 'ui' field."),
