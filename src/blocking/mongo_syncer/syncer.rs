@@ -50,7 +50,10 @@ impl MongoSyncer {
                 self.manager.sync_incr_to_now()?;
                 info!(?new_colls, "Make full sync for new collections. ");
                 self.manager.sync_documents_for_collections(&new_colls)?;
-                info!(?new_colls, "Full sync for new collections complete, goes into incremental node. ");
+                info!(
+                    ?new_colls,
+                    "Full sync for new collections complete, goes into incremental node. "
+                );
             }
         }
         // record sync collection arguments.
@@ -169,9 +172,10 @@ impl SyncManager {
                 let start_time = time_helper::to_datetime(&start_point);
                 let end_time = time_helper::to_datetime(&end_point);
 
-                info!(%start_time, "Begin fetch oplog");
+                info!(%start_time, %end_time, "Begin fetch oplog. ");
+                // FIXME: when `end_ts` - `start_ts` too large, fetch oplogs may goes into fail.
                 let mut oplogs = self.fetch_oplogs(start_point, end_point)?;
-                info!(%end_time, "fetch oplog complete");
+                info!(%start_time, %end_time, "fetch oplog complete. ");
                 bson_helper::map_oplog_uuids(&mut oplogs, &uuid_mapping)?;
 
                 if !oplogs.is_empty() {
@@ -194,7 +198,6 @@ impl SyncManager {
         }
     }
 
-    // TODO: when `end_ts` - `start_ts` too large, fetch oplogs may goes into fail.
     fn fetch_oplogs(&self, start_ts: Timestamp, end_ts: Timestamp) -> Result<Vec<Document>> {
         let cursor = self
             .conn
