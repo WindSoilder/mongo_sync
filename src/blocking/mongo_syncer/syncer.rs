@@ -177,13 +177,16 @@ impl SyncManager {
                 let mut oplogs = self.fetch_oplogs(start_point, end_point)?;
                 info!(%start_time, %end_time, "fetch oplog complete. ");
                 bson_helper::map_oplog_uuids(&mut oplogs, &uuid_mapping)?;
+                let oplogs = self.filter_oplogs(oplogs, &uuids);
+                info!(%start_time, %end_time, "Incr state: Filter oplogs. ");
 
                 if !oplogs.is_empty() {
-                    info!(%start_time, %end_time, "Incr state: Filter and apply oplogs ");
-                    let oplogs = self.filter_oplogs(oplogs, &uuids);
                     self.apply_logs(oplogs)?;
-                    info!(%start_time, %end_time, "Incr state: Apply oplogs complete ");
+                    info!(%start_time, %end_time, "Incr state: Apply oplogs complete. ");
+                } else {
+                    info!(%start_time, %end_time, "Incr state: After filter, no oplogs can be applied. ")
                 }
+
                 info!(%end_time, "Incr state: Write oplog records");
                 self.write_log_record(end_point)?;
             } else if start_point == end_point {

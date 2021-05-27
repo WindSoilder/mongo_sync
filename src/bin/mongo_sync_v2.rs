@@ -1,6 +1,6 @@
 use clap::Clap;
 use mongo_sync::OplogSyncer;
-use mongo_sync::SyncerConfigV2 as SyncerConfig;
+use mongo_sync::SyncerConfig;
 use tracing::info;
 
 #[derive(Clap, Debug)]

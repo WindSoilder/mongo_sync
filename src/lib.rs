@@ -1,5 +1,5 @@
 mod blocking;
-mod config_v2;
+mod config;
 mod error;
 mod oplog;
 
@@ -18,6 +18,6 @@ const OP_KEY: &str = "op";
 const NOOP_OP: &str = "n";
 
 pub use blocking::{Connection, MongoSyncer, OplogSyncer};
-pub use config_v2::{DbSyncConf, SyncerConfig as SyncerConfigV2};
+pub use config::{DbSyncConf, SyncerConfig};
 pub use error::{Result, SyncError};
 pub use oplog::v2::oplog::Oplog;

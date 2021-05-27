@@ -1,4 +1,4 @@
-use crate::config_v2::DbSyncConf;
+use crate::DbSyncConf;
 use crate::error::{Result, SyncError};
 use crate::{ADMIN_DB_NAME, LOG_STORAGE_COLL, LOG_STORAGE_DB};
 use mongodb::sync::{Client, Collection, Database};
