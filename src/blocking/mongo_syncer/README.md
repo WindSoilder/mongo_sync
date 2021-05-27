@@ -3,15 +3,19 @@
 ### Full sync
 1. Before sync data, take note for the latest oplog timestamp `A`(from source).
 2. Sync documents.
-3. After sync documents complete, take a note for the latest oplog timestamp `B`(from source)
-4. fetch all oplog between `timestamp A` and `timestamp B`
-5. Check if oplog between `A` and `B` valid, this can be accomplish by fetch the earliest oplog time, and check if it's less than `A`.
-6. Apply timestamp between `A` and `B`.
-
-TODO: What if I want to sync more collections...
-1. For fetching node, we have a latest oplog timestamp `B`
-2. Full sync documents in collections.
-3. Apply oplog after `B`
+3. Check if `A` still exists in oplog.
+4. Write check point `A` to target db.
 
 ### Incr sync
-Fetch oplog from source and apply..
+1. Get latest oplog timestamp `B`(from source)
+2. Fetch oplogs between `A` and `B`
+3. Apply oplogs
+4. Go back to 1.
+
+### Some corner case consider
+#### What if I want to sync more collections...
+1. Take note for collection sync arguments.
+2. Detect if we need to sync more collections
+3. If we need to, we first apply oplogs between checkpoint `A` and latest oplog timestamp `B` (from source)
+4. After apply complete, make full sync for these new collections
+5. Goes into incremental mode.
