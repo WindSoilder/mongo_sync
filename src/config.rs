@@ -1,10 +1,13 @@
 //! mongo_syncer basic configuration, express in toml.
 //!
 //! Basic configuration file example:
-//! ```toml
+//!
 //! [src]
 //! # source db url, need to be a replica set.
-//! url = "mongodb://rice:Ricemap123@localhost/?authSource=admin"
+//! url = "mongodb://root:Ricemap123@192.168.10.67/?authSource=admin"
+//!
+//! [oplog_storage]
+//! uri = "mongodb://localhost:27018/"
 //!
 //! [[sync]]
 //! # target db url, don't need to be a replica set.
