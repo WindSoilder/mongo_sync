@@ -1,15 +1,19 @@
 //! mongo_syncer basic configuration, express in toml.
 //!
 //! Basic configuration file example:
-//! ```toml
+//!
 //! [src]
-//! url = "mongodb://localhost/abc"
+//! # source db uri, need to be a replica set.
+//! uri = "mongodb://root:Ricemap123@192.168.10.67/?authSource=admin"
 //!
-//! [dst]
-//! url = "mognodb://localhost/def"
+//! [oplog_storage]
+//! uri = "mongodb://localhost:27018/"
 //!
-//! [sync]
-//! db = "database"
+//! [[sync]]
+//! # target db uri, don't need to be a replica set.
+//! dst_uri = "mongodb://root:Ricemap123@192.168.10.67/?authSource=admin"
+//! # specify database to sync.
+//! db = "bb"
 //! colls = ["a", "b"]
 //! ```
 use serde::Deserialize;
@@ -18,66 +22,43 @@ use serde::Deserialize;
 #[derive(Deserialize, Debug)]
 pub struct SyncerConfig {
     src: Src,
-    dst: Dst,
-    sync: DetailSyncConf,
+    oplog_storage: OplogStorage,
+    sync: Vec<DetailSyncConf>,
 }
 
 impl SyncerConfig {
-    /// get source mongodb url.
-    pub fn get_src_url(&self) -> &str {
-        &self.src.url
+    /// get source mongodb uri.
+    pub fn get_src_uri(&self) -> &str {
+        &self.src.uri
     }
 
-    /// get destination mongodb url.
-    pub fn get_dst_url(&self) -> &str {
-        &self.dst.url
+    pub fn get_oplog_storage_uri(&self) -> &str {
+        &self.oplog_storage.uri
     }
 
-    /// get database to sync.
-    pub fn get_db(&self) -> &str {
-        &self.sync.db
-    }
-
-    /// get collections to sync.
-    pub fn get_colls(&self) -> &Option<Vec<String>> {
-        &self.sync.colls
-    }
-
-    /// get concurrent to sync collections.
-    pub fn get_collection_concurrent(&self) -> usize {
-        self.sync.collection_concurrent
-    }
-
-    /// get document concurrent to sync inside one collection.
-    pub fn get_doc_concurrent(&self) -> usize {
-        self.sync.doc_concurrent
-    }
-
-    /// get record collection name.
-    ///
-    /// The collection is used to record current sync status.
-    pub fn get_record_collection(&self) -> &str {
-        &self.sync.record_collection
+    pub fn get_detail_sync_conf(&self) -> &Vec<DetailSyncConf> {
+        &self.sync
     }
 }
 
-/// Source database confuration.
+#[derive(Deserialize, Debug)]
+pub struct OplogStorage {
+    /// Oplog storage uri
+    uri: String,
+}
+
+/// Source database configuration.
 #[derive(Deserialize, Debug)]
 pub struct Src {
-    /// Source database url, it needs to be replica set, begins with 'mongodb://'
-    url: String,
-}
-
-/// Target database configuration.
-#[derive(Deserialize, Debug)]
-pub struct Dst {
-    /// Target database url.  Which begins with 'mongodb://'
-    url: String,
+    /// Source database uri, it needs to be replica set, begins with 'mongodb://'
+    uri: String,
 }
 
 /// Detail sync config, it indicates which database to sync, or which collection to sync.
 #[derive(Deserialize, Debug)]
 pub struct DetailSyncConf {
+    /// target db uri.
+    dst_uri: String,
     /// database name
     db: String,
     /// collections to sync, default it None, which means sync all collections.
@@ -110,8 +91,71 @@ fn half_number_of_cpus() -> usize {
     num_cpus::get() / 2
 }
 
-/// Logger config, for now it just includes where to save last optime.
-#[derive(Deserialize, Debug)]
-pub struct Log {
-    optime_path: String,
+#[derive(Debug)]
+pub struct DbSyncConf {
+    src: Src,
+    oplog_storage: OplogStorage,
+    conf: DetailSyncConf,
+}
+
+impl DbSyncConf {
+    pub fn new(
+        src_uri: String,
+        target_uri: String,
+        oplog_storage_uri: String,
+        db: String,
+        colls: Option<Vec<String>>,
+        collection_concurrent: Option<usize>,
+        doc_concurrent: Option<usize>,
+        record_collection: Option<String>,
+    ) -> Self {
+        DbSyncConf {
+            src: Src { uri: src_uri },
+            oplog_storage: {
+                OplogStorage {
+                    uri: oplog_storage_uri,
+                }
+            },
+            conf: DetailSyncConf {
+                dst_uri: target_uri,
+                db,
+                colls,
+                collection_concurrent: collection_concurrent.unwrap_or_else(number_of_cpus),
+                doc_concurrent: doc_concurrent.unwrap_or_else(half_number_of_cpus),
+                record_collection: record_collection.unwrap_or_else(default_record_collection),
+            },
+        }
+    }
+
+    pub fn get_db(&self) -> &str {
+        &self.conf.db
+    }
+
+    pub fn get_record_collection(&self) -> &str {
+        "oplog_records"
+    }
+
+    pub fn get_oplog_storage_uri(&self) -> &str {
+        &self.oplog_storage.uri
+    }
+
+    pub fn get_dst_uri(&self) -> &str {
+        &self.conf.dst_uri
+    }
+
+    pub fn get_src_uri(&self) -> &str {
+        &self.src.uri
+    }
+
+    pub fn get_collection_concurrent(&self) -> usize {
+        self.conf.collection_concurrent
+    }
+
+    pub fn get_doc_concurrent(&self) -> usize {
+        self.conf.doc_concurrent
+    }
+
+    pub fn get_colls(&self) -> &Option<Vec<String>> {
+        &self.conf.colls
+    }
 }

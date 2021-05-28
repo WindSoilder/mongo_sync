@@ -1,0 +1,20 @@
+[src]
+# source db uri, need to be a replica set.
+uri = "mongodb://root:Ricemap123@192.168.10.67/?authSource=admin"
+
+[oplog_storage]
+uri = "mongodb://localhost:27018/"
+
+[[sync]]
+# target db uri, don't need to be a replica set.
+dst_uri = "mongodb://root:Ricemap123@192.168.10.67/?authSource=admin"
+# specify database to sync.
+db = "bb"
+colls = ["a", "b"]
+
+[[sync]]
+# target db uri, don't need to be a replica set.
+dst_uri = "mongodb://root:Ricemap123@192.168.10.67/?authSource=admin"
+# specify database to sync.
+db = "bb"
+colls = ["a", "b"]

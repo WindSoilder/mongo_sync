@@ -1,73 +1,80 @@
 use super::full::{sync_one_concurrent, sync_one_serial, SyncTableStatus};
+use super::{bson_helper, mongo_helper, oplog_helper, time_helper};
 use crate::blocking::connection::Connection;
 use crate::error::{Result, SyncError};
-use bson::doc;
-use crossbeam::channel::{self, Receiver, Sender};
-use mongodb::options::FindOneOptions;
+use crate::{NAMESPACE_KEY, TIMESTAMP_KEY};
+use bson::{doc, Bson, Document, Timestamp};
+use crossbeam::channel;
+use mongodb::options::{FindOneOptions, UpdateOptions};
 use rayon::{ThreadPool, ThreadPoolBuilder};
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
+use tracing::info;
+use uuid::Uuid;
 
 pub struct MongoSyncer {
     manager: SyncManager,
-    receiver: Receiver<ManagerTaskStatus>,
 }
 
 const LARGE_COLL_SIZE: usize = 10000;
 
 impl MongoSyncer {
     pub fn new(conn: Connection) -> MongoSyncer {
-        let (sender, receiver) = channel::bounded(1);
         MongoSyncer {
-            manager: SyncManager::new(conn, sender),
-            receiver,
+            manager: SyncManager::new(conn),
         }
     }
 
     pub fn sync_full(&self) -> Result<()> {
-        self.manager.sync_full()?;
-
-        match self.receiver.recv() {
-            Ok(_) => Ok(()),
-            Err(e) => Err(SyncError::ReceiveStatusError(e)),
-        }
+        self.manager.sync_full()
     }
 
     pub fn sync_incremental(&self) -> Result<()> {
-        unimplemented!()
+        self.manager.sync_incr_forever()
     }
 
     pub fn sync(self) -> Result<()> {
-        loop {
-            // check time record missing.
-            if self.manager.is_time_record_missing()? {
-                self.sync_full()?;
+        // check time record missing.
+        if self.manager.is_time_record_missing()? {
+            self.sync_full()?;
+        } else {
+            // Although we are in increment state, but we may need to full sync some collection.
+            // Example:
+            // The first time we only want to sync collection `A`, `B`.
+            // But this time we want to sync collection `A`, `B`, `C` (or full DB).
+            if let Some(new_colls) = self.manager.get_new_colls_to_sync()? {
+                info!(
+                    ?new_colls,
+                    "Get new collections to sync, apply oplogs until now. "
+                );
+                self.manager.sync_incr_to_now()?;
+                info!(?new_colls, "Make full sync for new collections. ");
+                self.manager.sync_documents_for_collections(&new_colls)?;
+                info!(
+                    ?new_colls,
+                    "Full sync for new collections complete, goes into incremental node. "
+                );
             }
-            // self.manager.write_time_record()?;
-            self.sync_incremental()?;
         }
-        Ok(())
+        // record sync collection arguments.
+        self.manager.write_sync_colls_args()?;
+        self.sync_incremental()
     }
-}
-
-enum ManagerTaskStatus {
-    Done,
 }
 
 struct SyncManager {
     conn: Connection,
     pool: ThreadPool,
     coll_sync_pool: Arc<ThreadPool>,
-    sender: Sender<ManagerTaskStatus>,
 }
 
 impl SyncManager {
-    pub fn new(conn: Connection, sender: Sender<ManagerTaskStatus>) -> SyncManager {
+    pub fn new(conn: Connection) -> SyncManager {
         let conf = conn.get_conf();
         let coll_concurrent = conf.get_collection_concurrent();
         let doc_concurrent = conf.get_doc_concurrent();
         SyncManager {
             conn,
-            sender,
             coll_sync_pool: Arc::new(
                 ThreadPoolBuilder::new()
                     .num_threads(doc_concurrent)
@@ -82,24 +89,224 @@ impl SyncManager {
     }
 
     pub fn sync_full(&self) -> Result<()> {
+        let oplog_start = oplog_helper::get_latest_ts_no_capped(&self.conn.oplog_coll())?;
+
+        // just use for log..
+        let start_time = time_helper::to_datetime(&oplog_start);
+        info!(%start_time, "Full state: begin to sync databases. ");
+        self.sync_documents_full()?;
+        info!(%start_time, "Full state: sync database complete, check oplog and write start point.");
+
+        if self.check_log_valid(oplog_start)? {
+            self.write_log_record(oplog_start)?;
+            info!(%start_time, "Full state: write oplog start point complete, goes into incremental mode.")
+        } else {
+            panic!("Full state: oplog is no-longer valid, because they are not exists in database");
+        }
+
+        Ok(())
+    }
+
+    pub fn is_time_record_missing(&self) -> Result<bool> {
+        // when the following happened, return true:
+        // 1. can't get time record information, or
+        // 2. the minimum value of oplog timestamp > time record.
+        // condition 2 means that oplog can't be applied between time record and min(oplog timestamp)
+        let coll = self.conn.time_record_coll();
+        let rec = coll.find_one(None, None)?;
+        match rec {
+            Some(doc) => {
+                let ts = doc.get_timestamp(TIMESTAMP_KEY)?;
+                let missing = self
+                    .conn
+                    .oplog_coll()
+                    .find_one(
+                        None,
+                        FindOneOptions::builder().sort(doc! {"$natural": 1}).build(),
+                    )?
+                    .map(|log| {
+                        // unwrap here is ok because oplog always contains `ts` field.
+                        let oldest_ts = log.get_timestamp(TIMESTAMP_KEY).unwrap();
+                        oldest_ts > ts
+                    });
+                match missing {
+                    Some(missed) => Ok(missed),
+                    None => Ok(false), // can't find oplog.
+                }
+            }
+            None => Ok(true),
+        }
+    }
+
+    fn sync_incr(&self, forever: bool) -> Result<()> {
+        let oplog_coll = self.conn.oplog_coll();
+        let sleep_secs = std::time::Duration::from_secs(3);
+        let uuid_mapping = self.get_uuid_mapping()?;
+
+        let target_uuid = self.conn.get_target_db();
+        let uuids = mongo_helper::get_uuids(&target_uuid, self.conn.get_conf().get_colls())?;
+
+        // it's only useful when we don't want to sync forever.
+        // When we don't want to sync forever, we just want to apply oplog until this end_point.
+        let original_end_point = if !forever {
+            oplog_coll
+                .find_one(
+                    doc! {},
+                    FindOneOptions::builder()
+                        .sort(doc! {TIMESTAMP_KEY: -1})
+                        .build(),
+                )?
+                .unwrap()
+                .get_timestamp(TIMESTAMP_KEY)?
+        } else {
+            Timestamp {
+                time: 0,
+                increment: 0,
+            }
+        };
+
+        loop {
+            // For every loop we just sleep 3 seconds, to make less frequency query to mongodb.
+            std::thread::sleep(sleep_secs);
+            let start_point = self
+                .conn
+                .time_record_coll()
+                .find_one(None, None)?
+                .unwrap()
+                .get_timestamp(TIMESTAMP_KEY)?;
+            let mut end_point = oplog_helper::get_end_point(&oplog_coll, start_point, 10000)?;
+
+            if !forever && end_point > original_end_point {
+                end_point = original_end_point;
+            }
+
+            if start_point < end_point {
+                // only used for log...
+                let start_time = time_helper::to_datetime(&start_point);
+                let end_time = time_helper::to_datetime(&end_point);
+
+                info!(%start_time, %end_time, "Incr state: Begin fetch oplog. ");
+                let mut oplogs = self.fetch_oplogs(start_point, end_point)?;
+                info!(%start_time, %end_time, "Incr state: fetch oplog complete. Length of oplogs: {}", oplogs.len());
+                bson_helper::map_oplog_uuids(&mut oplogs, &uuid_mapping)?;
+                let oplogs = self.filter_oplogs(oplogs, &uuids);
+                info!(%start_time, %end_time, "Incr state: Filter oplogs. ");
+
+                if !oplogs.is_empty() {
+                    self.apply_logs(oplogs)?;
+                    info!(%start_time, %end_time, "Incr state: Apply oplogs complete. ");
+                } else {
+                    info!(%start_time, %end_time, "Incr state: After filter, no oplogs can be applied. ")
+                }
+
+                info!(%end_time, "Incr state: Write oplog records");
+                self.write_log_record(end_point)?;
+            } else if start_point == end_point {
+                info!("Incr state: No new oplogs available here, continue..");
+            } else {
+                // TODO: start_point > end_point, data corrupted occured, handle for this.
+            }
+
+            if !forever && end_point == original_end_point {
+                return Ok(());
+            }
+        }
+    }
+
+    fn fetch_oplogs(&self, start_ts: Timestamp, end_ts: Timestamp) -> Result<Vec<Document>> {
+        let cursor = self
+            .conn
+            .oplog_coll()
+            .find(doc! {"ts": {"$gte": start_ts, "$lte": end_ts}}, None)?;
+
+        let mut result = vec![];
+        for doc in cursor {
+            let doc = doc?;
+            result.push(doc)
+        }
+        Ok(result)
+    }
+
+    fn filter_oplogs(&self, oplogs: Vec<Document>, valid_uuids: &HashSet<Uuid>) -> Vec<Document> {
+        let conf = self.conn.get_conf();
+        let sync_db = conf.get_db();
+        match self.conn.get_conf().get_colls() {
+            // just need to filter oplogs which namespaces starts by 'given db'
+            None => oplogs
+                .into_iter()
+                .filter(|x| x.get_str(NAMESPACE_KEY).unwrap().starts_with(sync_db))
+                .collect(),
+            Some(_) => oplogs
+                .into_iter()
+                .filter(|x| {
+                    // filter by oplog 'ui'(collection uuid) field.
+                    // The benefit of using this field, we don't need to handle special case
+                    // like collection rename and insert.
+                    valid_uuids.contains(
+                        &bson_helper::get_uuid(x, "ui")
+                            .expect("oplog item should contains 'ui' field."),
+                    )
+                })
+                .collect(),
+        }
+    }
+
+    fn check_log_valid(&self, start_point: Timestamp) -> Result<bool> {
+        // just fetch oplog start point, if the start point is less than given oplogs, we can make sure that these oplogs is still valid.
+        let earliest_ts = oplog_helper::get_earliest_ts_no_capped(&self.conn.oplog_coll())?;
+        Ok(earliest_ts < start_point)
+    }
+
+    fn apply_logs(&self, oplogs: Vec<Document>) -> Result<()> {
+        let _exec_result = self
+            .conn
+            .get_target_admin_db()
+            .run_command(doc! {"applyOps": oplogs}, None)
+            .map_err(SyncError::MongoError)?;
+        // TODO: parse running result.
+        Ok(())
+    }
+
+    fn write_log_record(&self, log_ts: Timestamp) -> Result<()> {
+        self.conn.time_record_coll().update_one(
+            doc! {},
+            doc! { "$set": {"ts": log_ts} },
+            UpdateOptions::builder().upsert(true).build(),
+        )?;
+        Ok(())
+    }
+
+    fn sync_documents_full(&self) -> Result<()> {
+        let src_db = self.conn.get_src_db();
+        let coll_names = match self.conn.get_conf().get_colls() {
+            // use unwrap here is ok, because we have check list_collection_names before.
+            None => src_db.list_collection_names(None).unwrap(),
+            Some(colls) => colls.clone(),
+        };
+
+        self.sync_documents_for_collections(&coll_names)
+    }
+
+    pub fn sync_incr_to_now(&self) -> Result<()> {
+        self.sync_incr(false)
+    }
+
+    pub fn sync_incr_forever(&self) -> Result<()> {
+        self.sync_incr(true)
+    }
+
+    pub fn sync_documents_for_collections(&self, coll_names: &[String]) -> Result<()> {
         let conf = self.conn.get_conf();
         let coll_concurrent = conf.get_collection_concurrent();
         let doc_concurrent = conf.get_doc_concurrent();
         let (sender, receiver) = channel::bounded(coll_concurrent);
         let (src_db, target_db) = (self.conn.get_src_db(), self.conn.get_target_db());
 
-        let coll_names = match self.conn.get_conf().get_colls() {
-            // use unwrap here is ok, because we have check list_collection_names before.
-            None => src_db.list_collection_names(None).unwrap(),
-            Some(colls) => colls.clone(),
-        };
         let total = coll_names.len();
-
-        for coll in coll_names.into_iter() {
+        for coll in coll_names.iter() {
             let sender = sender.clone();
-            let source_coll = src_db.collection(&coll);
-            let target_coll = target_db.collection(&coll);
-            // ??? Maybe we need to put these operation into threads.
+            let source_coll = src_db.collection(coll);
+            let target_coll = target_db.collection(coll);
             let doc_count = source_coll.estimated_document_count(None)? as usize;
             target_coll.drop(None)?;
 
@@ -129,7 +336,6 @@ impl SyncManager {
                 SyncTableStatus::Done => {
                     complete_count += 1;
                     if total == complete_count {
-                        let _ = self.sender.send(ManagerTaskStatus::Done);
                         break;
                     }
                 }
@@ -138,42 +344,96 @@ impl SyncManager {
                 }
             }
         }
+
+        // We rebuild index in this main thread, because build index operation seems like to lock the whole database
+        // and build index in the sub-thread is meanless.
+        info!("Full state: Begin to re-build index for target collection");
+        for coll in coll_names.iter() {
+            let indexes = src_db.run_command(doc! { "listIndexes": coll }, None)?;
+            let indexes = indexes.get_document("cursor")?.get_array("firstBatch")?;
+            // TODO: will have problem when we have many indexes, using firstBatch is not enough, refer to mongodb document:
+            // https://docs.mongodb.com/manual/reference/command/listIndexes/
+            // A document that contains information with which to create a cursor to index information. The cursor information includes the cursor id, the
+            // full namespace for the command, as well as the first batch of results. Index information includes the keys and options used to create the index.
+            // and we have no way to fix it for now, because mongodb-driver doesn't provide something like `command_cursor`.
+            target_db.run_command(
+                doc! {
+                    "createIndexes": coll,
+                    "indexes": indexes,
+                },
+                None,
+            )?;
+        }
         Ok(())
     }
 
-    pub fn is_time_record_missing(&self) -> Result<bool> {
-        // when the following happened, return true:
-        // 1. can't get time record information, or
-        // 2. the minimum value of oplog timestamp > time record.
-        // condition 2 means that oplog can't be applied between time record and min(oplog timestamp)
-        let coll = self.conn.time_record_coll();
-        let rec = coll.find_one(None, None)?;
-        match rec {
-            Some(doc) => {
-                let ts = doc.get_timestamp("ts")?;
-                let missing = self
-                    .conn
-                    .oplog_coll()
-                    .find_one(None, FindOneOptions::builder().sort(doc! {"ts": 1}).build())?
-                    .map(|log| {
-                        // unwrap here is ok because oplog always contains `ts` field.
-                        let oldest_ts = log.get_timestamp("ts").unwrap();
-                        oldest_ts > ts
-                    });
-                match missing {
-                    Some(missed) => Ok(missed),
-                    None => Ok(false), // can't find oplog.
-                }
+    // generate uuid mapping between source database collection and target database collection
+    // we need this mapping to make `applyOps` command works.
+    fn get_uuid_mapping(&self) -> Result<HashMap<Uuid, Uuid>> {
+        let (src_db, target_db) = (self.conn.get_src_db(), self.conn.get_target_db());
+        mongo_helper::get_uuid_mapping(&src_db, &target_db)
+    }
+
+    pub fn write_sync_colls_args(&self) -> Result<()> {
+        let target_db = self.conn.get_target_db();
+        let colls_to_sync = target_db.collection("colls_to_sync");
+        match self.conn.get_conf().get_colls() {
+            None => {
+                colls_to_sync.delete_many(doc! {}, None)?;
             }
-            None => Ok(true),
+            Some(coll_names) => {
+                colls_to_sync.delete_many(doc! {}, None)?;
+                colls_to_sync.insert_one(doc! {"names": coll_names}, None)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn get_previous_sync_colls_args(&self) -> Result<Option<HashSet<String>>> {
+        let target_db = self.conn.get_target_db();
+        let colls_to_sync = target_db.collection("colls_to_sync");
+        let item = colls_to_sync.find_one(doc! {}, None)?;
+        match item {
+            None => Ok(None),
+            Some(d) => Ok(Some(
+                d.get_array("names")
+                    .unwrap()
+                    .iter()
+                    .map(|x| match x {
+                        Bson::String(s) => s.clone(),
+                        _ => panic!(r#"The elements in `names` fields should be string, data corrupted!!"
+"Try drop `colls_to_sync`, `oplog_records` collection in target_database, and make a full sync again."#),
+                    })
+                    .collect(),
+            )),
         }
     }
 
-    pub fn sync_incr(&self) -> Result<()> {
-        unimplemented!()
-        // read a batch of oplog.
-        // convert these oplog into db operations.
-        // warn: if we meet command, should block and execute these command first(one by one).
-        // do bulk_write.
+    pub fn get_new_colls_to_sync(&self) -> Result<Option<Vec<String>>> {
+        let origin_sync_colls = self.get_previous_sync_colls_args()?;
+        match origin_sync_colls {
+            None => Ok(None),
+            Some(origin_colls) => {
+                let src_db = self.conn.get_src_db();
+                let current_sync_colls: HashSet<String> = match self.conn.get_conf().get_colls() {
+                    // use unwrap here is ok, because we have check list_collection_names before.
+                    None => src_db
+                        .list_collection_names(None)
+                        .unwrap()
+                        .into_iter()
+                        .collect(),
+                    Some(colls) => colls.iter().cloned().collect(),
+                };
+                let new_colls: Vec<String> = current_sync_colls
+                    .difference(&origin_colls)
+                    .cloned()
+                    .collect();
+                if new_colls.is_empty() {
+                    Ok(None)
+                } else {
+                    Ok(Some(new_colls))
+                }
+            }
+        }
     }
 }

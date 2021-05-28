@@ -1,6 +1,7 @@
-use crate::config::SyncerConfig;
+use crate::DbSyncConf;
 use crate::error::{Result, SyncError};
-use mongodb::sync::{Client, Database, Collection};
+use crate::{ADMIN_DB_NAME, LOG_STORAGE_COLL, LOG_STORAGE_DB};
+use mongodb::sync::{Client, Collection, Database};
 use std::sync::Arc;
 
 #[derive(Clone)]
@@ -9,13 +10,15 @@ pub struct Connection {
 }
 
 impl Connection {
-    pub fn new(config: Arc<SyncerConfig>) -> Result<Connection> {
-        let source_conn = Client::with_uri_str(config.get_src_url())?;
-        let target_conn = Client::with_uri_str(config.get_dst_url())?;
+    pub fn new(config: Arc<DbSyncConf>) -> Result<Connection> {
+        let source_conn = Client::with_uri_str(config.get_src_uri())?;
+        let target_conn = Client::with_uri_str(config.get_dst_uri())?;
+        let oplog_storage_conn = Client::with_uri_str(config.get_oplog_storage_uri())?;
         Ok(Connection {
             inner: ConnectionInner {
                 source_conn,
                 target_conn,
+                oplog_storage_conn,
                 config,
             },
         })
@@ -34,14 +37,22 @@ impl Connection {
     }
 
     pub fn time_record_coll(&self) -> Collection {
-        self.get_target_db().collection(self.inner.config.get_record_collection())
+        self.get_target_db()
+            .collection(self.inner.config.get_record_collection())
     }
 
     pub fn oplog_coll(&self) -> Collection {
-        self.inner.source_conn.database("local").collection("oplog.rs")
+        self.inner
+            .oplog_storage_conn
+            .database(LOG_STORAGE_DB)
+            .collection(LOG_STORAGE_COLL)
     }
 
-    pub fn get_conf(&self) -> Arc<SyncerConfig> {
+    pub fn get_target_admin_db(&self) -> Database {
+        self.inner.target_conn.database(ADMIN_DB_NAME)
+    }
+
+    pub fn get_conf(&self) -> Arc<DbSyncConf> {
         self.inner.config.clone()
     }
 }
@@ -50,16 +61,18 @@ impl Connection {
 struct ConnectionInner {
     source_conn: Client,
     target_conn: Client,
-    config: Arc<SyncerConfig>,
+    oplog_storage_conn: Client,
+    config: Arc<DbSyncConf>,
 }
 
 impl ConnectionInner {
     pub fn check_permissions(&self) -> Result<()> {
+        // TODO: add admin access check, to ensure that we can execute applylog command.
         let db_name = self.config.get_db();
         let source_db = self.source_conn.database(db_name);
         if let Err(e) = source_db.list_collection_names(None) {
             return Err(SyncError::PermissionError {
-                uri: self.config.get_src_url().to_string(),
+                uri: self.config.get_src_uri().to_string(),
                 db: db_name.to_string(),
                 detail: e,
             });
@@ -68,7 +81,7 @@ impl ConnectionInner {
         let target_db = self.target_conn.database(db_name);
         if let Err(e) = target_db.list_collection_names(None) {
             return Err(SyncError::PermissionError {
-                uri: self.config.get_dst_url().to_string(),
+                uri: self.config.get_dst_uri().to_string(),
                 db: db_name.to_string(),
                 detail: e,
             });

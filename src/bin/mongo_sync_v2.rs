@@ -1,9 +1,6 @@
 use clap::Clap;
-use mongo_sync::{Connection, MongoSyncer, SyncerConfig};
-use std::sync::Arc;
-
-#[macro_use]
-extern crate log;
+use mongo_sync::OplogSyncer;
+use mongo_sync::SyncerConfig;
 
 #[derive(Clap, Debug)]
 #[clap(version = env!("CARGO_PKG_VERSION"), author = env!("CARGO_PKG_AUTHORS"))]
@@ -14,11 +11,17 @@ struct Opts {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    env_logger::init();
+    let collector = tracing_subscriber::fmt().finish();
+
+    tracing::subscriber::set_global_default(collector).expect("setting tracing default failed");
+
     let opts: Opts = Opts::parse();
     let data = std::fs::read(opts.conf).unwrap();
     let conf: SyncerConfig = toml::from_slice(&data).unwrap();
-    let syncer = MongoSyncer::new(Connection::new(Arc::new(conf)).unwrap());
-    syncer.sync()?;
+
+    let oplog_syncer: OplogSyncer =
+        OplogSyncer::new(conf.get_src_uri(), conf.get_oplog_storage_uri())?;
+    oplog_syncer.sync_forever()?;
+    // iterate through syncer configuration, and start new mongo_sync via command line.
     Ok(())
 }
