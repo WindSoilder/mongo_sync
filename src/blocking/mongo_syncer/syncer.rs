@@ -146,18 +146,10 @@ impl SyncManager {
         let target_uuid = self.conn.get_target_db();
         let uuids = mongo_helper::get_uuids(&target_uuid, self.conn.get_conf().get_colls())?;
 
-        loop {
-            // For every loop we just sleep 3 seconds, to make less frequency query to mongodb.
-            std::thread::sleep(sleep_secs);
-            let start_point = self
-                .conn
-                .time_record_coll()
-                .find_one(None, None)?
-                .unwrap()
-                .get_timestamp(TIMESTAMP_KEY)
-                .expect("oplog should contains a key named `ts`");
-
-            let end_point = oplog_coll
+        // it's only useful when we don't want to sync forever.
+        // When we don't want to sync forever, we just want to apply oplog until this end_point.
+        let original_end_point = if !forever {
+            oplog_coll
                 .find_one(
                     doc! {},
                     FindOneOptions::builder()
@@ -166,7 +158,28 @@ impl SyncManager {
                 )?
                 .unwrap()
                 .get_timestamp(TIMESTAMP_KEY)
-                .expect("oplog should contains a key named `ts`");
+                .expect("oplog should contains a key named `ts`")
+        } else {
+            Timestamp {
+                time: 0,
+                increment: 0,
+            }
+        };
+
+        loop {
+            // For every loop we just sleep 3 seconds, to make less frequency query to mongodb.
+            std::thread::sleep(sleep_secs);
+            let start_point = self
+                .conn
+                .time_record_coll()
+                .find_one(None, None)?
+                .unwrap()
+                .get_timestamp(TIMESTAMP_KEY)?;
+            let mut end_point = oplog_helper::get_end_point(&oplog_coll, start_point, 10000)?;
+
+            if !forever && end_point > original_end_point {
+                end_point = original_end_point;
+            }
 
             if start_point < end_point {
                 // only used for log...
@@ -176,7 +189,7 @@ impl SyncManager {
                 info!(%start_time, %end_time, "Incr state: Begin fetch oplog. ");
                 // FIXME: when `end_ts` - `start_ts` too large, fetch oplogs may goes into fail.
                 let mut oplogs = self.fetch_oplogs(start_point, end_point)?;
-                info!(%start_time, %end_time, "Incr state: fetch oplog complete. ");
+                info!(%start_time, %end_time, "Incr state: fetch oplog complete. Length of oplogs: {}", oplogs.len());
                 bson_helper::map_oplog_uuids(&mut oplogs, &uuid_mapping)?;
                 let oplogs = self.filter_oplogs(oplogs, &uuids);
                 info!(%start_time, %end_time, "Incr state: Filter oplogs. ");
@@ -196,7 +209,7 @@ impl SyncManager {
                 // TODO: start_point > end_point, data corrupted occured, handle for this.
             }
 
-            if !forever {
+            if !forever && end_point == original_end_point {
                 return Ok(());
             }
         }
@@ -386,7 +399,8 @@ impl SyncManager {
                     .iter()
                     .map(|x| match x {
                         Bson::String(s) => s.clone(),
-                        _ => panic!("xxx"),
+                        _ => panic!(r#"The elements in `names` fields should be string, data corrupted!!"
+"Try drop `colls_to_sync`, `oplog_records` collection in target_database, and make a full sync again."#),
                     })
                     .collect(),
             )),
