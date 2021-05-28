@@ -157,8 +157,7 @@ impl SyncManager {
                         .build(),
                 )?
                 .unwrap()
-                .get_timestamp(TIMESTAMP_KEY)
-                .expect("oplog should contains a key named `ts`")
+                .get_timestamp(TIMESTAMP_KEY)?
         } else {
             Timestamp {
                 time: 0,
@@ -352,10 +351,11 @@ impl SyncManager {
         for coll in coll_names.iter() {
             let indexes = src_db.run_command(doc! { "listIndexes": coll }, None)?;
             let indexes = indexes.get_document("cursor")?.get_array("firstBatch")?;
-            // FIXME: will have problem when we have many indexes, using firstBatch is not enough, refer to mongodb document:
+            // TODO: will have problem when we have many indexes, using firstBatch is not enough, refer to mongodb document:
             // https://docs.mongodb.com/manual/reference/command/listIndexes/
             // A document that contains information with which to create a cursor to index information. The cursor information includes the cursor id, the
             // full namespace for the command, as well as the first batch of results. Index information includes the keys and options used to create the index.
+            // and we have no way to fix it for now, because mongodb-driver doesn't provide something like `command_cursor`.
             target_db.run_command(
                 doc! {
                     "createIndexes": coll,
