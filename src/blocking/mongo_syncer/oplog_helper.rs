@@ -2,7 +2,7 @@ use crate::{Result, SyncError, TIMESTAMP_KEY};
 use bson::{doc, Timestamp};
 use mongodb::options::FindOneOptions;
 use mongodb::sync::Collection;
-use tracing::info;
+use tracing::debug;
 
 enum Natural {
     Earliest,
@@ -77,7 +77,7 @@ pub fn get_end_point(
             None,
         )?;
         if cnt > size as i64 {
-            info!(?start_point, ?db_end_point, %cnt, "Too many oplogs, going to make end_time smaller.");
+            debug!(?start_point, ?db_end_point, %cnt, "Too many oplogs, going to make end_time smaller.");
 
             if db_end_point.time == start_point.time {
                 // This happened when we have too many oplogs in at the same time.
