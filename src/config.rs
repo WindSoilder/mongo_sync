@@ -3,15 +3,15 @@
 //! Basic configuration file example:
 //!
 //! [src]
-//! # source db url, need to be a replica set.
-//! url = "mongodb://root:Ricemap123@192.168.10.67/?authSource=admin"
+//! # source db uri, need to be a replica set.
+//! uri = "mongodb://root:Ricemap123@192.168.10.67/?authSource=admin"
 //!
 //! [oplog_storage]
 //! uri = "mongodb://localhost:27018/"
 //!
 //! [[sync]]
-//! # target db url, don't need to be a replica set.
-//! dst_url = "mongodb://root:Ricemap123@192.168.10.67/?authSource=admin"
+//! # target db uri, don't need to be a replica set.
+//! dst_uri = "mongodb://root:Ricemap123@192.168.10.67/?authSource=admin"
 //! # specify database to sync.
 //! db = "bb"
 //! colls = ["a", "b"]
@@ -27,9 +27,9 @@ pub struct SyncerConfig {
 }
 
 impl SyncerConfig {
-    /// get source mongodb url.
-    pub fn get_src_url(&self) -> &str {
-        &self.src.url
+    /// get source mongodb uri.
+    pub fn get_src_uri(&self) -> &str {
+        &self.src.uri
     }
 
     pub fn get_oplog_storage_uri(&self) -> &str {
@@ -50,15 +50,15 @@ pub struct OplogStorage {
 /// Source database configuration.
 #[derive(Deserialize, Debug)]
 pub struct Src {
-    /// Source database url, it needs to be replica set, begins with 'mongodb://'
-    url: String,
+    /// Source database uri, it needs to be replica set, begins with 'mongodb://'
+    uri: String,
 }
 
 /// Detail sync config, it indicates which database to sync, or which collection to sync.
 #[derive(Deserialize, Debug)]
 pub struct DetailSyncConf {
-    /// target db url.
-    dst_url: String,
+    /// target db uri.
+    dst_uri: String,
     /// database name
     db: String,
     /// collections to sync, default it None, which means sync all collections.
@@ -110,14 +110,14 @@ impl DbSyncConf {
         record_collection: Option<String>,
     ) -> Self {
         DbSyncConf {
-            src: Src { url: src_uri },
+            src: Src { uri: src_uri },
             oplog_storage: {
                 OplogStorage {
                     uri: oplog_storage_uri,
                 }
             },
             conf: DetailSyncConf {
-                dst_url: target_uri,
+                dst_uri: target_uri,
                 db,
                 colls,
                 collection_concurrent: collection_concurrent.unwrap_or_else(number_of_cpus),
@@ -135,16 +135,16 @@ impl DbSyncConf {
         "oplog_records"
     }
 
-    pub fn get_oplog_storage_url(&self) -> &str {
+    pub fn get_oplog_storage_uri(&self) -> &str {
         &self.oplog_storage.uri
     }
 
-    pub fn get_dst_url(&self) -> &str {
-        &self.conf.dst_url
+    pub fn get_dst_uri(&self) -> &str {
+        &self.conf.dst_uri
     }
 
-    pub fn get_src_url(&self) -> &str {
-        &self.src.url
+    pub fn get_src_uri(&self) -> &str {
+        &self.src.uri
     }
 
     pub fn get_collection_concurrent(&self) -> usize {

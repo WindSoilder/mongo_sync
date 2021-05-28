@@ -11,9 +11,9 @@ pub struct Connection {
 
 impl Connection {
     pub fn new(config: Arc<DbSyncConf>) -> Result<Connection> {
-        let source_conn = Client::with_uri_str(config.get_src_url())?;
-        let target_conn = Client::with_uri_str(config.get_dst_url())?;
-        let oplog_storage_conn = Client::with_uri_str(config.get_oplog_storage_url())?;
+        let source_conn = Client::with_uri_str(config.get_src_uri())?;
+        let target_conn = Client::with_uri_str(config.get_dst_uri())?;
+        let oplog_storage_conn = Client::with_uri_str(config.get_oplog_storage_uri())?;
         Ok(Connection {
             inner: ConnectionInner {
                 source_conn,
@@ -72,7 +72,7 @@ impl ConnectionInner {
         let source_db = self.source_conn.database(db_name);
         if let Err(e) = source_db.list_collection_names(None) {
             return Err(SyncError::PermissionError {
-                uri: self.config.get_src_url().to_string(),
+                uri: self.config.get_src_uri().to_string(),
                 db: db_name.to_string(),
                 detail: e,
             });
@@ -81,7 +81,7 @@ impl ConnectionInner {
         let target_db = self.target_conn.database(db_name);
         if let Err(e) = target_db.list_collection_names(None) {
             return Err(SyncError::PermissionError {
-                uri: self.config.get_dst_url().to_string(),
+                uri: self.config.get_dst_uri().to_string(),
                 db: db_name.to_string(),
                 detail: e,
             });
