@@ -187,7 +187,6 @@ impl SyncManager {
                 let end_time = time_helper::to_datetime(&end_point);
 
                 info!(%start_time, %end_time, "Incr state: Begin fetch oplog. ");
-                // FIXME: when `end_ts` - `start_ts` too large, fetch oplogs may goes into fail.
                 let mut oplogs = self.fetch_oplogs(start_point, end_point)?;
                 info!(%start_time, %end_time, "Incr state: fetch oplog complete. Length of oplogs: {}", oplogs.len());
                 bson_helper::map_oplog_uuids(&mut oplogs, &uuid_mapping)?;
@@ -353,7 +352,10 @@ impl SyncManager {
         for coll in coll_names.iter() {
             let indexes = src_db.run_command(doc! { "listIndexes": coll }, None)?;
             let indexes = indexes.get_document("cursor")?.get_array("firstBatch")?;
-            // FIXME: will have problem when we have many indexes, using firstBatch is not enough.
+            // FIXME: will have problem when we have many indexes, using firstBatch is not enough, refer to mongodb document:
+            // https://docs.mongodb.com/manual/reference/command/listIndexes/
+            // A document that contains information with which to create a cursor to index information. The cursor information includes the cursor id, the
+            // full namespace for the command, as well as the first batch of results. Index information includes the keys and options used to create the index.
             target_db.run_command(
                 doc! {
                     "createIndexes": coll,
