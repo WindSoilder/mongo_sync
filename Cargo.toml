@@ -3,6 +3,16 @@ name = "mongo_sync"
 version = "0.1.0"
 authors = ["WindSoilder <WindSoilder@outlook.com>"]
 edition = "2018"
+license = "GPL-3.0"
+description = "instant coding answers via the command line(just like howdoi)"
+repository = "https://github.com/WindSoilder/mongo_sync"
+documentation = "https://github.com/WindSoilder/mongo_sync/blob/master/README.md"
+readme = "./README.md"
+keywords = ["mongodb", "database", "nosql", "mongo"]
+categories = ["command-line-utilities", "concurrency"]
+exclude = [
+    "tests/*"
+]
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
