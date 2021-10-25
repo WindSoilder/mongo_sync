@@ -60,6 +60,6 @@ const NOOP_OP: &str = "n";
 /// command operation.
 const COMMAND_OP: &str = "c";
 
-pub use blocking::{Connection, MongoSyncer, OplogSyncer, OplogCleaner};
+pub use blocking::{Connection, MongoSyncer, OplogCleaner, OplogSyncer};
 pub use config::{DbSyncConf, OplogSyncerConfig};
 pub use error::{Result, SyncError};

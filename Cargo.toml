@@ -2,7 +2,7 @@
 name = "mongo_sync"
 version = "0.1.0"
 authors = ["WindSoilder <WindSoilder@outlook.com>"]
-edition = "2018"
+edition = "2021"
 license = "GPL-3.0"
 description = "instant coding answers via the command line(just like howdoi)"
 repository = "https://github.com/WindSoilder/mongo_sync"
